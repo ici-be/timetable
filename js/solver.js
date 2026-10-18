@@ -63,6 +63,8 @@ export function compileRules(rules, dayTypes, members, dateMeta) {
     const p = rule.params || {};
     const targetTypeSet = new Set(resolveTargetTypeIds(p.targetTypes, dayTypes));
     const triggerTypeSet = new Set(resolveTargetTypeIds(p.triggerTypes, dayTypes));
+    const groupATypeSet = new Set(resolveTargetTypeIds(p.groupATypes, dayTypes));
+    const groupBTypeSet = new Set(resolveTargetTypeIds(p.groupBTypes, dayTypes));
     const targetMemberSet = new Set(resolveTargetMemberIds(p.targetMembers, members));
     const matchingDayIdxs = dateMeta
       .filter(dm => matchesDayFilter(dm.dateObj, p.dayFilter))
@@ -72,10 +74,12 @@ export function compileRules(rules, dayTypes, members, dateMeta) {
       rule,
       kind: rule.kind,
       severity: rule.severity || 'hard',
-      weight: Number(rule.weight) || (rule.severity === 'soft' ? 40 : 100),
+      weight: Number(rule.weight) || (rule.severity === 'soft' ? 50 : 100),
       params: p,
       targetTypeSet,
       triggerTypeSet,
+      groupATypeSet,
+      groupBTypeSet,
       targetMemberSet,
       matchingDayIdxs
     };
@@ -84,13 +88,13 @@ export function compileRules(rules, dayTypes, members, dateMeta) {
 
 /**
  * Détermine pour chaque (dateIdx, memberId) les types de journées autorisés (domaine)
- * en tenant compte de la typologie (semaine/weekend), des désidératas et des règles unaires.
+ * en tenant compte de la typologie (semaine/weekend), des désidératas et des règles unaires / transitions fixes.
  */
 export function computeDomains(dateMeta, members, dayTypes, desiderata, compiledRules) {
   const defaultWeekendRest = dayTypes.find(dt => dt.isDefaultRest) || dayTypes.find(dt => dt.id === 'REPOS') || dayTypes[dayTypes.length - 1];
   const defaultWeekdayWork = dayTypes.find(dt => dt.id === 'BUREAU') || dayTypes.find(dt => dt.autoAssign && dt.dayScope !== 'weekend') || dayTypes[0];
 
-  // Types qui peuvent être requis par une règle d'enchaînement (ex: REPOS après garde)
+  // Types qui peuvent être requis par une règle d'enchaînement
   const ruleRequiredTypes = new Set();
   for (const cr of compiledRules) {
     if (cr.kind === 'sequence_transition' && cr.params.mode === 'require') {
@@ -147,7 +151,6 @@ export function computeDomains(dateMeta, members, dayTypes, desiderata, compiled
       // Garantir au moins un type de repli pour éviter un domaine vide
       if (allowed.length === 0) {
         if (des && Array.isArray(des.forbiddenTypes)) {
-          // Chercher un type de repos ou travail non interdit
           const fallback = dayTypes.find(dt => !des.forbiddenTypes.includes(dt.id));
           allowed = [fallback ? fallback.id : (dm.isWeekend ? defaultWeekendRest.id : defaultWeekdayWork.id)];
         } else {
@@ -159,6 +162,51 @@ export function computeDomains(dateMeta, members, dayTypes, desiderata, compiled
     }
   }
 
+  // 5. Pré-appliquer les transitions strictes déclenchées par des absences fixées (ex: Congé > 2j, Maladie)
+  for (const cr of compiledRules) {
+    if (cr.kind !== 'sequence_transition' || cr.severity !== 'hard') continue;
+    const minStreak = Math.max(1, Number(cr.params.minTriggerStreak) || 1);
+    const dir = (cr.params.direction === 'before' || Number(cr.params.offsetDays) < 0) ? 'before' : 'after';
+    const seqDays = cr.params.skipWeekends !== false ? dateMeta.filter(d => !d.isWeekend) : dateMeta;
+
+    for (const member of members) {
+      if (!cr.targetMemberSet.has(member.id)) continue;
+      let i = 0;
+      while (i < seqDays.length) {
+        const dom = domains[`${seqDays[i].iso}__${member.id}`];
+        if (dom.length === 1 && cr.triggerTypeSet.has(dom[0])) {
+          let j = i;
+          while (
+            j + 1 < seqDays.length &&
+            domains[`${seqDays[j + 1].iso}__${member.id}`].length === 1 &&
+            cr.triggerTypeSet.has(domains[`${seqDays[j + 1].iso}__${member.id}`][0])
+          ) {
+            j++;
+          }
+          const runLen = j - i + 1;
+          if (runLen >= minStreak) {
+            const targetPos = dir === 'before' ? i - 1 : j + 1;
+            if (targetPos >= 0 && targetPos < seqDays.length) {
+              const targetKey = `${seqDays[targetPos].iso}__${member.id}`;
+              const curDom = domains[targetKey];
+              if (curDom.length > 1) {
+                const filtered = cr.params.mode === 'forbid'
+                  ? curDom.filter(t => !cr.targetTypeSet.has(t))
+                  : curDom.filter(t => cr.targetTypeSet.has(t));
+                if (filtered.length > 0) {
+                  domains[targetKey] = filtered;
+                }
+              }
+            }
+          }
+          i = j + 1;
+        } else {
+          i++;
+        }
+      }
+    }
+  }
+
   return domains;
 }
 
@@ -167,9 +215,11 @@ export function computeDomains(dateMeta, members, dayTypes, desiderata, compiled
  * par rapport à toutes les règles compilées et aux désidératas.
  */
 export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, compiledRules) {
-  const violations = []; // Liste détaillée des violations
+  const violations = [];
   let hardPenalty = 0;
   let softPenalty = 0;
+
+  const workingTypeSet = new Set(dayTypes.filter(dt => dt.isWorkingDay).map(dt => dt.id));
 
   // Vérification des désidératas
   for (const dm of dateMeta) {
@@ -213,7 +263,20 @@ export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, 
 
   // Évaluation de chaque règle
   for (const cr of compiledRules) {
-    const { rule, kind, severity, weight, params, targetTypeSet, triggerTypeSet, targetMemberSet, matchingDayIdxs } = cr;
+    const {
+      rule,
+      kind,
+      severity,
+      weight,
+      params,
+      targetTypeSet,
+      triggerTypeSet,
+      groupATypeSet,
+      groupBTypeSet,
+      targetMemberSet,
+      matchingDayIdxs
+    } = cr;
+
     const addViolation = (amount, dateIso, memberId, message) => {
       if (severity === 'hard') {
         hardPenalty += weight * amount;
@@ -270,24 +333,31 @@ export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, 
           for (const m of members) {
             if (!targetMemberSet.has(m.id)) continue;
             let count = 0;
+            let workingDaysInPeriod = 0;
             for (const dm of filteredDays) {
               const t = grid[dm.iso]?.[m.id];
               if (targetTypeSet.has(t)) count++;
+              if (workingTypeSet.has(t) || targetTypeSet.has(t)) workingDaysInPeriod++;
             }
-            if (params.min !== null && params.min !== undefined && count < params.min) {
-              addViolation(
-                params.min - count,
-                filteredDays[0].iso,
-                m.id,
-                `${m.name} : ${count} j. au lieu de min. ${params.min} (${rule.name})`
-              );
+
+            if (params.min !== null && params.min !== undefined) {
+              // Ajuster le minimum au nombre de jours ouvrés réellement travaillés (hors congés/maladies)
+              const effectiveMin = Math.min(params.min, workingDaysInPeriod);
+              if (count < effectiveMin) {
+                addViolation(
+                  effectiveMin - count,
+                  filteredDays[0].iso,
+                  m.id,
+                  `${m.name} (sem. du ${formatDateShort(filteredDays[0].iso)}) : ${count} j. au lieu de min. ${effectiveMin} (${rule.name})`
+                );
+              }
             }
             if (params.max !== null && params.max !== undefined && count > params.max) {
               addViolation(
                 count - params.max,
                 filteredDays[0].iso,
                 m.id,
-                `${m.name} : ${count} j. au lieu de max. ${params.max} (${rule.name})`
+                `${m.name} (sem. du ${formatDateShort(filteredDays[0].iso)}) : ${count} j. au lieu de max. ${params.max} (${rule.name})`
               );
             }
           }
@@ -296,40 +366,65 @@ export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, 
       }
 
       case 'sequence_transition': {
-        const offset = Number(params.offsetDays) || 1;
-        for (let dIdx = 0; dIdx < dateMeta.length; dIdx++) {
-          const nextIdx = dIdx + offset;
-          if (nextIdx < 0 || nextIdx >= dateMeta.length) continue;
-          const dmNow = dateMeta[dIdx];
-          const dmNext = dateMeta[nextIdx];
+        const minStreak = Math.max(1, Number(params.minTriggerStreak) || 1);
+        const dir = (params.direction === 'before' || Number(params.offsetDays) < 0) ? 'before' : 'after';
+        const seqDays = params.skipWeekends !== false ? dateMeta.filter(d => !d.isWeekend) : dateMeta;
 
-          for (const m of members) {
-            if (!targetMemberSet.has(m.id)) continue;
-            const tNow = grid[dmNow.iso]?.[m.id];
-            if (!triggerTypeSet.has(tNow)) continue;
-
-            // Si c'est un samedi et que le dimanche est aussi un jour de garde, la transition s'applique surtout du dimanche au lundi
-            if (dmNow.dow === 6 && offset === 1 && dmNext.dow === 0 && triggerTypeSet.has(grid[dmNext.iso]?.[m.id])) {
-              continue;
-            }
-
-            const tNext = grid[dmNext.iso]?.[m.id];
-            if (params.mode === 'forbid' && targetTypeSet.has(tNext)) {
-              addViolation(
-                1.5,
-                dmNext.iso,
-                m.id,
-                `${m.name} (${formatDateShort(dmNext.iso)}) : "${tNext}" interdit après "${tNow}" (${rule.name})`
-              );
-            } else if (params.mode === 'require' && !targetTypeSet.has(tNext)) {
-              addViolation(
-                1.5,
-                dmNext.iso,
-                m.id,
-                `${m.name} (${formatDateShort(dmNext.iso)}) : doit être en [${Array.from(targetTypeSet).join('/')}] après "${tNow}" (${rule.name})`
-              );
+        for (const m of members) {
+          if (!targetMemberSet.has(m.id)) continue;
+          let i = 0;
+          while (i < seqDays.length) {
+            const tNow = grid[seqDays[i].iso]?.[m.id];
+            if (triggerTypeSet.has(tNow)) {
+              let j = i;
+              while (j + 1 < seqDays.length && triggerTypeSet.has(grid[seqDays[j + 1].iso]?.[m.id])) {
+                j++;
+              }
+              const runLen = j - i + 1;
+              if (runLen >= minStreak) {
+                const targetPos = dir === 'before' ? i - 1 : j + 1;
+                if (targetPos >= 0 && targetPos < seqDays.length) {
+                  const dmTarget = seqDays[targetPos];
+                  const tTarget = grid[dmTarget.iso]?.[m.id];
+                  if (params.mode === 'forbid' && targetTypeSet.has(tTarget)) {
+                    addViolation(
+                      1.5,
+                      dmTarget.iso,
+                      m.id,
+                      `${m.name} (${formatDateShort(dmTarget.iso)}) : "${tTarget}" interdit ${dir === 'before' ? 'avant' : 'après'} ${runLen} j. de "${tNow}" (${rule.name})`
+                    );
+                  } else if (params.mode === 'require' && !targetTypeSet.has(tTarget)) {
+                    addViolation(
+                      1.5,
+                      dmTarget.iso,
+                      m.id,
+                      `${m.name} (${formatDateShort(dmTarget.iso)}) : doit être en [${Array.from(targetTypeSet).join('/')}] ${dir === 'before' ? 'avant' : 'après'} "${tNow}" (${rule.name})`
+                    );
+                  }
+                }
+              }
+              i = j + 1;
+            } else {
+              i++;
             }
           }
+        }
+        break;
+      }
+
+      case 'daily_balance': {
+        for (const dIdx of matchingDayIdxs) {
+          const dm = dateMeta[dIdx];
+          let countA = 0;
+          let countB = 0;
+          for (const m of members) {
+            const t = grid[dm.iso]?.[m.id];
+            if (groupATypeSet.has(t)) countA++;
+            else if (groupBTypeSet.has(t)) countB++;
+          }
+          const diff = Math.abs(countA - countB);
+          // Pénalité quadratique pour favoriser à la fois l'équilibre Bureau/TT chaque jour et le lissage sur la semaine
+          softPenalty += (diff * diff) * (weight * 0.16);
         }
         break;
       }
@@ -373,9 +468,51 @@ export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, 
                   2,
                   dmSun.iso,
                   m.id,
-                  `${m.name} (${formatDateShort(dmSat.iso)}-${formatDateShort(dmSun.iso)}) : garde weekend coupée (${rule.name})`
+                  `${m.name} (${formatDateShort(dmSat.iso)}-${formatDateShort(dmSun.iso)}) : weekend coupé (${rule.name})`
                 );
               }
+            }
+          }
+        }
+        break;
+      }
+
+      case 'max_consecutive_weekends': {
+        const maxW = Math.max(1, Number(params.maxConsecutiveWeekends) || 1);
+        // Regrouper les paires (Samedi, Dimanche) consécutives
+        const weekendPairs = [];
+        for (let dIdx = 0; dIdx < dateMeta.length - 1; dIdx++) {
+          const dmSat = dateMeta[dIdx];
+          const dmSun = dateMeta[dIdx + 1];
+          if (dmSat.dow === 6 && dmSun.dow === 0) {
+            weekendPairs.push({ sat: dmSat, sun: dmSun });
+          }
+        }
+
+        for (const m of members) {
+          if (!targetMemberSet.has(m.id)) continue;
+          let streak = 0;
+          for (const pair of weekendPairs) {
+            const tSat = grid[pair.sat.iso]?.[m.id];
+            const tSun = grid[pair.sun.iso]?.[m.id];
+            // Est en service si au moins un des deux jours n'est PAS du repos/congé (ou est dans workingTypeSet)
+            // Par défaut targetTypes = ['REPOS']. Si tSat n'est pas dans targetTypes ou tSun n'est pas dans targetTypes => service
+            const isWorkingSat = targetTypeSet.size > 0 ? !targetTypeSet.has(tSat) : workingTypeSet.has(tSat);
+            const isWorkingSun = targetTypeSet.size > 0 ? !targetTypeSet.has(tSun) : workingTypeSet.has(tSun);
+            const isServiceThisWeekend = isWorkingSat || isWorkingSun;
+
+            if (isServiceThisWeekend) {
+              streak++;
+              if (streak > maxW) {
+                addViolation(
+                  2,
+                  pair.sun.iso,
+                  m.id,
+                  `${m.name} (${formatDateShort(pair.sat.iso)}-${formatDateShort(pair.sun.iso)}) : service sur ${streak} weekends consécutifs (max: ${maxW}) (${rule.name})`
+                );
+              }
+            } else {
+              streak = 0;
             }
           }
         }
@@ -445,7 +582,7 @@ export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, 
       case 'fairness_balance': {
         const targetMembersArr = members.filter(m => targetMemberSet.has(m.id));
         if (targetMembersArr.length >= 2) {
-          // Calculer l'écart pour chaque type ciblé ET pour la somme des types ciblés
+          // 1. Équité stricte par type individuel (ex: même nombre de Perm. Matin, même nombre de Perm. Midi, même nombre de Perm. Soir)
           for (const typeId of targetTypeSet) {
             const counts = targetMembersArr.map(m => {
               let c = 0;
@@ -457,21 +594,28 @@ export function evaluateSchedule(grid, dateMeta, members, dayTypes, desiderata, 
             const maxC = Math.max(...counts);
             const minC = Math.min(...counts);
             const spread = maxC - minC;
-            if (spread > 1) {
-              softPenalty += (spread - 1) * (weight * 0.35);
+            const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+            const sumSqDiff = counts.reduce((acc, c) => acc + (c - mean) * (c - mean), 0);
+
+            if (spread > 0) {
+              softPenalty += spread * (weight * 0.9) + sumSqDiff * (weight * 0.5);
             }
           }
-          // Aussi équilibrer le total combiné des types ciblés
-          const totalCounts = targetMembersArr.map(m => {
-            let c = 0;
-            for (const dm of dateMeta) {
-              if (targetTypeSet.has(grid[dm.iso]?.[m.id])) c++;
+          // 2. Équité sur le total combiné des types ciblés
+          if (targetTypeSet.size > 1) {
+            const totalCounts = targetMembersArr.map(m => {
+              let c = 0;
+              for (const dm of dateMeta) {
+                if (targetTypeSet.has(grid[dm.iso]?.[m.id])) c++;
+              }
+              return c;
+            });
+            const spreadTotal = Math.max(...totalCounts) - Math.min(...totalCounts);
+            const meanTotal = totalCounts.reduce((a, b) => a + b, 0) / totalCounts.length;
+            const sumSqTotal = totalCounts.reduce((acc, c) => acc + (c - meanTotal) * (c - meanTotal), 0);
+            if (spreadTotal > 0) {
+              softPenalty += spreadTotal * (weight * 0.8) + sumSqTotal * (weight * 0.45);
             }
-            return c;
-          });
-          const spreadTotal = Math.max(...totalCounts) - Math.min(...totalCounts);
-          if (spreadTotal > 1) {
-            softPenalty += (spreadTotal - 1) * (weight * 0.5);
           }
         }
         break;
@@ -514,6 +658,11 @@ function buildConstructiveInitialGrid(dateMeta, members, dayTypes, domains, comp
   const defaultWeekendRest = (dayTypes.find(dt => dt.isDefaultRest) || dayTypes.find(dt => dt.id === 'REPOS') || dayTypes[dayTypes.length - 1])?.id;
   const defaultWeekdayWork = (dayTypes.find(dt => dt.id === 'BUREAU') || dayTypes.find(dt => dt.autoAssign && dt.dayScope !== 'weekend') || dayTypes[0])?.id;
 
+  const officeTypeIds = new Set(
+    dayTypes.filter(dt => dt.id === 'BUREAU' || (Array.isArray(dt.tags) && dt.tags.includes('bureau'))).map(dt => dt.id)
+  );
+  if (defaultWeekdayWork) officeTypeIds.add(defaultWeekdayWork);
+
   // Compteurs d'équité par membre et par type
   const memberTypeCounts = {};
   for (const m of members) {
@@ -532,144 +681,59 @@ function buildConstructiveInitialGrid(dateMeta, members, dayTypes, domains, comp
     }
   }
 
-  // 2. Planifier les weekends en premier (pour respecter weekend_pair_consistency et préparer les lundis)
-  const hasWeekendPairRule = compiledRules.some(cr => cr.kind === 'weekend_pair_consistency' && cr.severity === 'hard');
-  const weekendDutyRule = compiledRules.find(
-    cr => cr.kind === 'daily_headcount' && (cr.params.dayFilter === 'weekend' || cr.params.dayFilter === 'all') && cr.params.min > 0
-  );
-  const dutyTypeId = weekendDutyRule ? Array.from(weekendDutyRule.targetTypeSet)[0] : 'GARDE_WE';
-  const dutyTargetCount = weekendDutyRule ? (weekendDutyRule.params.min || 1) : 0;
-
-  for (let dIdx = 0; dIdx < dateMeta.length; dIdx++) {
-    const dm = dateMeta[dIdx];
+  // 2. Planifier les weekends
+  for (const dm of dateMeta) {
     if (!dm.isWeekend) continue;
-
-    // Si Samedi + Dimanche consécutifs et règle de paire active
-    if (dm.dow === 6 && dIdx + 1 < dateMeta.length && dateMeta[dIdx + 1].dow === 0 && hasWeekendPairRule) {
-      const dmSat = dm;
-      const dmSun = dateMeta[dIdx + 1];
-
-      // Combien de personnes ont déjà la garde imposée par désidérata ?
-      const preAssigned = members.filter(
-        m => grid[dmSat.iso][m.id] === dutyTypeId || grid[dmSun.iso][m.id] === dutyTypeId
-      );
-      for (const m of preAssigned) {
-        if (!grid[dmSat.iso][m.id] && domains[`${dmSat.iso}__${m.id}`].includes(dutyTypeId)) {
-          grid[dmSat.iso][m.id] = dutyTypeId;
-        }
-        if (!grid[dmSun.iso][m.id] && domains[`${dmSun.iso}__${m.id}`].includes(dutyTypeId)) {
-          grid[dmSun.iso][m.id] = dutyTypeId;
-        }
-      }
-
-      let currentDutyCount = members.filter(m => grid[dmSat.iso][m.id] === dutyTypeId).length;
-      // Trier les candidats éligibles les deux jours et ayant le moins de gardes jusqu'ici
-      const candidates = shuffleWithRNG(members, rng)
-        .filter(m =>
-          !grid[dmSat.iso][m.id] &&
-          !grid[dmSun.iso][m.id] &&
-          domains[`${dmSat.iso}__${m.id}`].includes(dutyTypeId) &&
-          domains[`${dmSun.iso}__${m.id}`].includes(dutyTypeId)
-        )
-        .sort((a, b) => (memberTypeCounts[a.id][dutyTypeId] || 0) - (memberTypeCounts[b.id][dutyTypeId] || 0));
-
-      for (const cand of candidates) {
-        if (currentDutyCount >= dutyTargetCount) break;
-        grid[dmSat.iso][cand.id] = dutyTypeId;
-        grid[dmSun.iso][cand.id] = dutyTypeId;
-        memberTypeCounts[cand.id][dutyTypeId] = (memberTypeCounts[cand.id][dutyTypeId] || 0) + 2;
-        currentDutyCount++;
-      }
-
-      // Les autres sont en repos weekend
-      for (const m of members) {
-        for (const dayW of [dmSat, dmSun]) {
-          if (!grid[dayW.iso][m.id]) {
-            const dom = domains[`${dayW.iso}__${m.id}`];
-            const chosen = dom.includes(defaultWeekendRest) ? defaultWeekendRest : dom[0];
-            grid[dayW.iso][m.id] = chosen;
-          }
-        }
-      }
-      dIdx++; // Sauter dimanche car déjà traité
-    } else {
-      // Jour de weekend isolé ou sans règle de paire
-      let currentDutyCount = members.filter(m => grid[dm.iso][m.id] === dutyTypeId).length;
-      const candidates = shuffleWithRNG(members, rng)
-        .filter(m => !grid[dm.iso][m.id] && domains[`${dm.iso}__${m.id}`].includes(dutyTypeId))
-        .sort((a, b) => (memberTypeCounts[a.id][dutyTypeId] || 0) - (memberTypeCounts[b.id][dutyTypeId] || 0));
-
-      for (const cand of candidates) {
-        if (currentDutyCount >= dutyTargetCount) break;
-        grid[dm.iso][cand.id] = dutyTypeId;
-        memberTypeCounts[cand.id][dutyTypeId] = (memberTypeCounts[cand.id][dutyTypeId] || 0) + 1;
-        currentDutyCount++;
-      }
-      for (const m of members) {
-        if (!grid[dm.iso][m.id]) {
-          const dom = domains[`${dm.iso}__${m.id}`];
-          grid[dm.iso][m.id] = dom.includes(defaultWeekendRest) ? defaultWeekendRest : dom[0];
-        }
+    for (const m of members) {
+      if (!grid[dm.iso][m.id]) {
+        const dom = domains[`${dm.iso}__${m.id}`];
+        grid[dm.iso][m.id] = dom.includes(defaultWeekendRest) ? defaultWeekendRest : dom[0];
       }
     }
   }
 
-  // 3. Planifier les jours de semaine semaine par semaine
+  // 3. Identifier les types à quota journalier exact (ex: 1 Bur. Matin, 1 Bur. Midi, 1 Bur. Soir)
+  const weekdaysAll = dateMeta.filter(d => !d.isWeekend);
+  const exactDailyTypes = [];
+  for (const cr of compiledRules) {
+    if (
+      cr.kind === 'daily_headcount' &&
+      cr.params.min !== null &&
+      cr.params.max !== null &&
+      cr.params.min === cr.params.max &&
+      cr.targetTypeSet.size === 1
+    ) {
+      const tId = Array.from(cr.targetTypeSet)[0];
+      if (!exactDailyTypes.includes(tId)) exactDailyTypes.push(tId);
+    }
+  }
+
+  // Calculer le nombre de jours ouvrés disponibles par membre sur l'ensemble de la période
+  const availWeekdaysCount = {};
+  for (const m of members) {
+    availWeekdaysCount[m.id] = weekdaysAll.filter(dm => !grid[dm.iso][m.id]).length;
+  }
+
+  // 4. Planifier les jours de semaine semaine par semaine
   const weeksMap = new Map();
   for (const dm of dateMeta) {
     if (!weeksMap.has(dm.weekIndex)) weeksMap.set(dm.weekIndex, []);
     weeksMap.get(dm.weekIndex).push(dm);
   }
 
-  // Règles d'enchaînement (ex: pas de TT après GARDE_WE)
-  const transitionRules = compiledRules.filter(cr => cr.kind === 'sequence_transition');
-  // Quotas hebdomadaires (ex: max 2 TT par semaine)
   const weeklyQuotaRules = compiledRules.filter(cr => cr.kind === 'member_period_count' && cr.params.period === 'week');
+  const maxTTRule = weeklyQuotaRules.find(cr => cr.params.max !== null && cr.params.max !== undefined && cr.targetTypeSet.has('TT'));
+  const maxTTPerWeek = maxTTRule ? maxTTRule.params.max : 2;
+  const minBureauWeekRule = weeklyQuotaRules.find(cr => cr.params.min !== null && cr.params.min > 0 && cr.targetTypeSet.has(defaultWeekdayWork));
+  const minBureauPerWeek = minBureauWeekRule ? minBureauWeekRule.params.min : 2;
 
   for (const weekDays of weeksMap.values()) {
     const weekdays = weekDays.filter(d => !d.isWeekend);
 
+    // 4a. Attribuer d'abord les permanences quotidiennes (BUREAU_MATIN, BUREAU_MIDI, BUREAU_SOIR)
+    // en priorisant les membres ayant le moins de cette permanence, puis le moins de permanences au total,
+    // puis ceux ayant le moins de jours ouvrés disponibles (ex: en congé une partie de la semaine).
     for (const dm of weekdays) {
-      // Vérifier pour chaque membre quels types sont interdits par transition depuis J-offset
-      const allowedTodayForMember = {};
-      for (const m of members) {
-        let dom = [...domains[`${dm.iso}__${m.id}`]];
-        for (const tr of transitionRules) {
-          if (!tr.targetMemberSet.has(m.id)) continue;
-          const prevIdx = dm.idx - (Number(tr.params.offsetDays) || 1);
-          if (prevIdx >= 0 && prevIdx < dateMeta.length) {
-            const prevType = grid[dateMeta[prevIdx].iso]?.[m.id];
-            if (tr.triggerTypeSet.has(prevType)) {
-              if (tr.params.mode === 'forbid') {
-                const filtered = dom.filter(t => !tr.targetTypeSet.has(t));
-                if (filtered.length > 0) dom = filtered;
-              } else if (tr.params.mode === 'require') {
-                const filtered = dom.filter(t => tr.targetTypeSet.has(t));
-                if (filtered.length > 0) dom = filtered;
-              }
-            }
-          }
-        }
-
-        // Vérifier les quotas max hebdomadaires déjà atteints dans la semaine
-        for (const wq of weeklyQuotaRules) {
-          if (wq.params.max !== null && wq.params.max !== undefined && wq.targetMemberSet.has(m.id)) {
-            let countInWeek = 0;
-            for (const wd of weekDays) {
-              const assignedT = grid[wd.iso]?.[m.id];
-              if (assignedT && wq.targetTypeSet.has(assignedT)) countInWeek++;
-            }
-            if (countInWeek >= wq.params.max) {
-              const filtered = dom.filter(t => !wq.targetTypeSet.has(t));
-              if (filtered.length > 0) dom = filtered;
-            }
-          }
-        }
-
-        allowedTodayForMember[m.id] = dom;
-      }
-
-      // Attribuer d'abord les quotas journaliers spécifiques (ex: exactement 1 TT_PERM)
       const exactDailyRules = compiledRules.filter(
         cr => cr.kind === 'daily_headcount' &&
           cr.matchingDayIdxs.includes(dm.idx) &&
@@ -685,8 +749,18 @@ function buildConstructiveInitialGrid(dateMeta, members, dayTypes, domains, comp
         let current = members.filter(m => grid[dm.iso][m.id] === targetType).length;
 
         const candidates = shuffleWithRNG(members, rng)
-          .filter(m => !grid[dm.iso][m.id] && allowedTodayForMember[m.id].includes(targetType))
-          .sort((a, b) => (memberTypeCounts[a.id][targetType] || 0) - (memberTypeCounts[b.id][targetType] || 0));
+          .filter(m => !grid[dm.iso][m.id] && domains[`${dm.iso}__${m.id}`].includes(targetType))
+          .sort((a, b) => {
+            const countA = memberTypeCounts[a.id][targetType] || 0;
+            const countB = memberTypeCounts[b.id][targetType] || 0;
+            if (countA !== countB) return countA - countB;
+
+            const totalPermA = exactDailyTypes.reduce((acc, t) => acc + (memberTypeCounts[a.id][t] || 0), 0);
+            const totalPermB = exactDailyTypes.reduce((acc, t) => acc + (memberTypeCounts[b.id][t] || 0), 0);
+            if (totalPermA !== totalPermB) return totalPermA - totalPermB;
+
+            return (availWeekdaysCount[a.id] || 0) - (availWeekdaysCount[b.id] || 0);
+          });
 
         for (const cand of candidates) {
           if (current >= needed) break;
@@ -695,55 +769,78 @@ function buildConstructiveInitialGrid(dateMeta, members, dayTypes, domains, comp
           current++;
         }
       }
+    }
 
-      // Attribuer ensuite du télétravail (TT) tout en gardant le minimum requis au BUREAU
+    // 4b. Attribuer ensuite TT vs BUREAU sur chaque jour de la semaine de façon équilibrée
+    for (let wDayPos = 0; wDayPos < weekdays.length; wDayPos++) {
+      const dm = weekdays[wDayPos];
+      const remainingWeekdaysAfterToday = weekdays.slice(wDayPos + 1);
+
       const minBureauRule = compiledRules.find(
         cr => cr.kind === 'daily_headcount' &&
           cr.matchingDayIdxs.includes(dm.idx) &&
           cr.targetTypeSet.has(defaultWeekdayWork) &&
           cr.params.min > 0
       );
-      const minBureau = minBureauRule ? minBureauRule.params.min : 0;
+      const minBureauToday = minBureauRule ? minBureauRule.params.min : 4;
 
-      // Membres restants à affecter aujourd'hui
+      // Compter les personnes déjà au bureau (ex: les 3 permanences) et les personnes travaillant aujourd'hui
+      const workingTodayCount = members.filter(m => {
+        const fixed = grid[dm.iso][m.id];
+        if (!fixed) return true;
+        return officeTypeIds.has(fixed) || fixed === 'TT';
+      }).length;
+
+      // Cible idéale de TT aujourd'hui : équilibrer Bureau et TT tout en respectant minBureauToday et le quota hebdo
+      const targetTTToday = Math.max(
+        0,
+        Math.min(
+          workingTodayCount - minBureauToday,
+          Math.floor(workingTodayCount / 2)
+        )
+      );
+
+      let currentTTToday = members.filter(m => grid[dm.iso][m.id] === 'TT').length;
+
       const unassigned = shuffleWithRNG(members, rng).filter(m => !grid[dm.iso][m.id]);
 
-      // Trier les membres restants : ceux qui ont eu le MOINS de télétravail jusqu'ici sont prioritaires pour TT
-      const ttTypes = dayTypes.filter(dt => dt.id !== defaultWeekdayWork && dt.autoAssign && dt.dayScope !== 'weekend' && !exactDailyRules.some(r => r.targetTypeSet.has(dt.id))).map(dt => dt.id);
-
+      // Trier les candidats pour le TT : ceux qui ont eu le moins de TT cette semaine et sur la période
       unassigned.sort((a, b) => {
-        const ttA = ttTypes.reduce((acc, t) => acc + (memberTypeCounts[a.id][t] || 0), 0);
-        const ttB = ttTypes.reduce((acc, t) => acc + (memberTypeCounts[b.id][t] || 0), 0);
-        return ttA - ttB;
+        const ttWeekA = weekdays.reduce((acc, d) => acc + (grid[d.iso][a.id] === 'TT' ? 1 : 0), 0);
+        const ttWeekB = weekdays.reduce((acc, d) => acc + (grid[d.iso][b.id] === 'TT' ? 1 : 0), 0);
+        if (ttWeekA !== ttWeekB) return ttWeekA - ttWeekB;
+        return (memberTypeCounts[a.id]['TT'] || 0) - (memberTypeCounts[b.id]['TT'] || 0);
       });
 
-      for (let i = 0; i < unassigned.length; i++) {
-        const m = unassigned[i];
-        const dom = allowedTodayForMember[m.id];
-        const currentBureauCount = members.filter(x => grid[dm.iso][x.id] === defaultWeekdayWork).length;
-        const remainingCouldBeBureau = unassigned.slice(i + 1).filter(x => allowedTodayForMember[x.id].includes(defaultWeekdayWork)).length;
+      for (const m of unassigned) {
+        const dom = domains[`${dm.iso}__${m.id}`];
+        const ttInWeek = weekdays.reduce((acc, d) => acc + (grid[d.iso][m.id] === 'TT' ? 1 : 0), 0);
+        const bureauInWeek = weekdays.reduce((acc, d) => acc + (officeTypeIds.has(grid[d.iso][m.id]) ? 1 : 0), 0);
+        const futureAvailDays = remainingWeekdaysAfterToday.filter(d => {
+          const fDom = domains[`${d.iso}__${m.id}`];
+          return fDom.some(t => officeTypeIds.has(t));
+        }).length;
+        const totalWorkingDaysInWeek = weekdays.filter(d => {
+          const fDom = domains[`${d.iso}__${m.id}`];
+          return fDom.some(t => officeTypeIds.has(t) || t === 'TT');
+        }).length;
+        const neededMinBureau = Math.min(minBureauPerWeek, totalWorkingDaysInWeek);
 
-        // Si on doit impérativement mettre ce membre au bureau pour atteindre minBureau
-        if (
-          dom.includes(defaultWeekdayWork) &&
-          currentBureauCount + remainingCouldBeBureau < minBureau
-        ) {
-          grid[dm.iso][m.id] = defaultWeekdayWork;
-          memberTypeCounts[m.id][defaultWeekdayWork] = (memberTypeCounts[m.id][defaultWeekdayWork] || 0) + 1;
-          continue;
-        }
+        const canTakeTT =
+          dom.includes('TT') &&
+          ttInWeek < maxTTPerWeek &&
+          currentTTToday < targetTTToday &&
+          (bureauInWeek + futureAvailDays >= neededMinBureau);
 
-        // Sinon, regarder si un type TT est disponible et pertinent
-        const availTT = dom.filter(t => ttTypes.includes(t));
-        if (availTT.length > 0 && currentBureauCount + remainingCouldBeBureau >= minBureau) {
-          const chosenTT = availTT[Math.floor(rng() * availTT.length)];
-          grid[dm.iso][m.id] = chosenTT;
-          memberTypeCounts[m.id][chosenTT] = (memberTypeCounts[m.id][chosenTT] || 0) + 1;
+        if (canTakeTT) {
+          grid[dm.iso][m.id] = 'TT';
+          memberTypeCounts[m.id]['TT'] = (memberTypeCounts[m.id]['TT'] || 0) + 1;
+          currentTTToday++;
         } else if (dom.includes(defaultWeekdayWork)) {
           grid[dm.iso][m.id] = defaultWeekdayWork;
           memberTypeCounts[m.id][defaultWeekdayWork] = (memberTypeCounts[m.id][defaultWeekdayWork] || 0) + 1;
         } else {
-          const fallback = dom[Math.floor(rng() * dom.length)];
+          const fallback = dom[0];
           grid[dm.iso][m.id] = fallback;
           memberTypeCounts[m.id][fallback] = (memberTypeCounts[m.id][fallback] || 0) + 1;
         }
@@ -756,7 +853,7 @@ function buildConstructiveInitialGrid(dateMeta, members, dayTypes, domains, comp
 
 /**
  * Calcule un bonus de diversité par rapport à une proposition précédente
- * pour que le bouton "Autre proposition" propose un horaire réellement différent.
+ * pour que le bouton "Autre variante" propose un horaire réellement différent.
  */
 function computeSimilarityPenalty(grid, previousGrid, dateMeta, members) {
   if (!previousGrid) return 0;
@@ -773,7 +870,6 @@ function computeSimilarityPenalty(grid, previousGrid, dateMeta, members) {
     }
   }
   if (totalMutable === 0) return 0;
-  // Pénalité légère si trop similaire (> 80% identique)
   const ratio = sameCells / totalMutable;
   return ratio * 35;
 }
@@ -789,20 +885,31 @@ export function generateSchedule({
   desiderata = {},
   seed = Date.now(),
   previousGrid = null,
-  maxIterations = 1800
+  maxIterations = 2400
 }) {
   const activeMembers = members.filter(m => m.active !== false);
   const dateMeta = buildDateMetadata(dateISOs);
   const compiledRules = compileRules(rules, dayTypes, activeMembers, dateMeta);
   const domains = computeDomains(dateMeta, activeMembers, dayTypes, desiderata, compiledRules);
 
-  const hasWeekendPairRule = compiledRules.some(cr => cr.kind === 'weekend_pair_consistency' && cr.severity === 'hard');
+  const weekdaysMeta = dateMeta.filter(d => !d.isWeekend);
+  const exactDailyTypeSet = new Set();
+  for (const cr of compiledRules) {
+    if (
+      cr.kind === 'daily_headcount' &&
+      cr.params.min !== null &&
+      cr.params.max !== null &&
+      cr.params.min === cr.params.max &&
+      cr.targetTypeSet.size === 1
+    ) {
+      cr.targetTypeSet.forEach(t => exactDailyTypeSet.add(t));
+    }
+  }
 
   let globalBestGrid = null;
   let globalBestEval = null;
   let globalBestObjective = Infinity;
 
-  // Multi-start (3 démarrages constructifs différents) pour maximiser les chances de 0 violation
   const starts = 3;
   const iterPerStart = Math.floor(maxIterations / starts);
 
@@ -819,75 +926,23 @@ export function generateSchedule({
       globalBestEval = currentEval;
     }
 
-    // Recherche locale (mutations unitaires, échanges entre 2 membres le même jour, échanges de weekend)
     for (let iter = 0; iter < iterPerStart; iter++) {
-      const temperature = Math.max(0.5, (1 - iter / iterPerStart) * 15);
+      const temperature = Math.max(0.3, (1 - iter / iterPerStart) * 12);
       const moveRoll = rng();
 
-      // Choisir un jour au hasard (ou cibler un jour avec violation 50% du temps)
-      let targetDateIso;
+      // Choisir un jour ouvré principalement
+      let dm;
       if (currentEval.hardViolations.length > 0 && rng() < 0.6) {
         const v = currentEval.hardViolations[Math.floor(rng() * currentEval.hardViolations.length)];
-        targetDateIso = v.dateIso || dateMeta[Math.floor(rng() * dateMeta.length)].iso;
+        dm = dateMeta.find(d => d.iso === v.dateIso) || weekdaysMeta[Math.floor(rng() * weekdaysMeta.length)] || dateMeta[0];
+      } else if (weekdaysMeta.length > 0) {
+        dm = weekdaysMeta[Math.floor(rng() * weekdaysMeta.length)];
       } else {
-        targetDateIso = dateMeta[Math.floor(rng() * dateMeta.length)].iso;
+        dm = dateMeta[Math.floor(rng() * dateMeta.length)];
       }
 
-      const dm = dateMeta.find(d => d.iso === targetDateIso) || dateMeta[0];
-
-      // Mouvement 1 : Échange de garde sur tout un weekend (Samedi + Dimanche) entre 2 membres
-      if (dm.isWeekend && hasWeekendPairRule && activeMembers.length >= 2) {
-        const satIdx = dm.dow === 6 ? dm.idx : dm.idx - 1;
-        const sunIdx = satIdx + 1;
-        if (satIdx >= 0 && sunIdx < dateMeta.length && dateMeta[satIdx].dow === 6 && dateMeta[sunIdx].dow === 0) {
-          const satIso = dateMeta[satIdx].iso;
-          const sunIso = dateMeta[sunIdx].iso;
-          const m1 = activeMembers[Math.floor(rng() * activeMembers.length)];
-          const m2 = activeMembers[Math.floor(rng() * activeMembers.length)];
-          if (m1.id !== m2.id) {
-            const t1Sat = currentGrid[satIso][m1.id];
-            const t2Sat = currentGrid[satIso][m2.id];
-            const t1Sun = currentGrid[sunIso][m1.id];
-            const t2Sun = currentGrid[sunIso][m2.id];
-
-            if (
-              t1Sat !== t2Sat &&
-              domains[`${satIso}__${m1.id}`].includes(t2Sat) &&
-              domains[`${satIso}__${m2.id}`].includes(t1Sat) &&
-              domains[`${sunIso}__${m1.id}`].includes(t2Sun) &&
-              domains[`${sunIso}__${m2.id}`].includes(t1Sun)
-            ) {
-              currentGrid[satIso][m1.id] = t2Sat;
-              currentGrid[satIso][m2.id] = t1Sat;
-              currentGrid[sunIso][m1.id] = t2Sun;
-              currentGrid[sunIso][m2.id] = t1Sun;
-
-              const newEval = evaluateSchedule(currentGrid, dateMeta, activeMembers, dayTypes, desiderata, compiledRules);
-              const newObj = newEval.totalCost + computeSimilarityPenalty(currentGrid, previousGrid, dateMeta, activeMembers);
-
-              if (newObj <= currentObj || (newEval.hardPenalty <= currentEval.hardPenalty && rng() < Math.exp((currentObj - newObj) / temperature))) {
-                currentEval = newEval;
-                currentObj = newObj;
-                if (currentObj < globalBestObjective) {
-                  globalBestObjective = currentObj;
-                  globalBestGrid = cloneGrid(currentGrid);
-                  globalBestEval = currentEval;
-                }
-              } else {
-                // Annuler
-                currentGrid[satIso][m1.id] = t1Sat;
-                currentGrid[satIso][m2.id] = t2Sat;
-                currentGrid[sunIso][m1.id] = t1Sun;
-                currentGrid[sunIso][m2.id] = t2Sun;
-              }
-            }
-          }
-          continue;
-        }
-      }
-
-      // Mouvement 2 (50% du temps) : Échanger les rôles de 2 membres le même jour (préserve les quotas journaliers !)
-      if (moveRoll < 0.5 && activeMembers.length >= 2) {
+      // Mouvement 1 (45% du temps) : Échanger les affectations de 2 membres le même jour (préserve les quotas journaliers)
+      if (moveRoll < 0.45 && activeMembers.length >= 2) {
         const m1 = activeMembers[Math.floor(rng() * activeMembers.length)];
         const m2 = activeMembers[Math.floor(rng() * activeMembers.length)];
         if (m1.id === m2.id) continue;
@@ -896,10 +951,7 @@ export function generateSchedule({
         const t2 = currentGrid[dm.iso][m2.id];
         if (t1 === t2) continue;
 
-        const dom1 = domains[`${dm.iso}__${m1.id}`];
-        const dom2 = domains[`${dm.iso}__${m2.id}`];
-
-        if (dom1.includes(t2) && dom2.includes(t1)) {
+        if (domains[`${dm.iso}__${m1.id}`].includes(t2) && domains[`${dm.iso}__${m2.id}`].includes(t1)) {
           currentGrid[dm.iso][m1.id] = t2;
           currentGrid[dm.iso][m2.id] = t1;
 
@@ -919,31 +971,121 @@ export function generateSchedule({
             currentGrid[dm.iso][m2.id] = t2;
           }
         }
-      } else {
-        // Mouvement 3 : Changer le type de journée d'un membre sur ce jour parmi son domaine
-        const m = activeMembers[Math.floor(rng() * activeMembers.length)];
-        const dom = domains[`${dm.iso}__${m.id}`];
-        if (dom.length <= 1) continue;
+        continue;
+      }
 
-        const oldType = currentGrid[dm.iso][m.id];
-        const candidates = dom.filter(t => t !== oldType);
-        const newType = candidates[Math.floor(rng() * candidates.length)];
+      // Mouvement 2 (30% du temps) : Échange croisé (AB / BA) entre 2 membres sur 2 jours ouvrés (préserve quotas journaliers ET totaux par membre !)
+      if (moveRoll < 0.75 && weekdaysMeta.length >= 2 && activeMembers.length >= 2) {
+        const dm2 = weekdaysMeta[Math.floor(rng() * weekdaysMeta.length)];
+        if (dm.iso === dm2.iso) continue;
 
-        currentGrid[dm.iso][m.id] = newType;
-        const newEval = evaluateSchedule(currentGrid, dateMeta, activeMembers, dayTypes, desiderata, compiledRules);
-        const newObj = newEval.totalCost + computeSimilarityPenalty(currentGrid, previousGrid, dateMeta, activeMembers);
+        const m1 = activeMembers[Math.floor(rng() * activeMembers.length)];
+        const m2 = activeMembers[Math.floor(rng() * activeMembers.length)];
+        if (m1.id === m2.id) continue;
 
-        if (newObj <= currentObj || (newEval.hardPenalty <= currentEval.hardPenalty && rng() < Math.exp((currentObj - newObj) / temperature))) {
-          currentEval = newEval;
-          currentObj = newObj;
-          if (currentObj < globalBestObjective) {
-            globalBestObjective = currentObj;
-            globalBestGrid = cloneGrid(currentGrid);
-            globalBestEval = currentEval;
+        const t1Day1 = currentGrid[dm.iso][m1.id];
+        const t2Day1 = currentGrid[dm.iso][m2.id];
+        const t1Day2 = currentGrid[dm2.iso][m1.id];
+        const t2Day2 = currentGrid[dm2.iso][m2.id];
+
+        if (t1Day1 === t2Day1 || t1Day2 === t2Day2) continue;
+
+        if (
+          domains[`${dm.iso}__${m1.id}`].includes(t2Day1) &&
+          domains[`${dm.iso}__${m2.id}`].includes(t1Day1) &&
+          domains[`${dm2.iso}__${m1.id}`].includes(t2Day2) &&
+          domains[`${dm2.iso}__${m2.id}`].includes(t1Day2)
+        ) {
+          currentGrid[dm.iso][m1.id] = t2Day1;
+          currentGrid[dm.iso][m2.id] = t1Day1;
+          currentGrid[dm2.iso][m1.id] = t2Day2;
+          currentGrid[dm2.iso][m2.id] = t1Day2;
+
+          const newEval = evaluateSchedule(currentGrid, dateMeta, activeMembers, dayTypes, desiderata, compiledRules);
+          const newObj = newEval.totalCost + computeSimilarityPenalty(currentGrid, previousGrid, dateMeta, activeMembers);
+
+          if (newObj <= currentObj || (newEval.hardPenalty <= currentEval.hardPenalty && rng() < Math.exp((currentObj - newObj) / temperature))) {
+            currentEval = newEval;
+            currentObj = newObj;
+            if (currentObj < globalBestObjective) {
+              globalBestObjective = currentObj;
+              globalBestGrid = cloneGrid(currentGrid);
+              globalBestEval = currentEval;
+            }
+          } else {
+            currentGrid[dm.iso][m1.id] = t1Day1;
+            currentGrid[dm.iso][m2.id] = t2Day1;
+            currentGrid[dm2.iso][m1.id] = t1Day2;
+            currentGrid[dm2.iso][m2.id] = t2Day2;
           }
-        } else {
-          currentGrid[dm.iso][m.id] = oldType;
         }
+        continue;
+      }
+
+      // Mouvement 3 (20% du temps) : Échange intra-membre sur 2 jours ouvrés de la même semaine
+      // (ex : TT lundi ↔ BUREAU vendredi). Préserve les quotas hebdomadaires par membre et les
+      // permanences exactes, tout en modifiant les effectifs journaliers (lissage Bureau / TT).
+      if (moveRoll < 0.95 && weekdaysMeta.length >= 2) {
+        const sameWeek = weekdaysMeta.filter(d => d.iso !== dm.iso && d.weekIndex === dm.weekIndex);
+        const pool = sameWeek.length > 0 ? sameWeek : weekdaysMeta.filter(d => d.iso !== dm.iso);
+        if (pool.length > 0) {
+          const dm2 = pool[Math.floor(rng() * pool.length)];
+          const mm = activeMembers[Math.floor(rng() * activeMembers.length)];
+          const ta = currentGrid[dm.iso][mm.id];
+          const tb = currentGrid[dm2.iso][mm.id];
+          if (
+            ta !== tb &&
+            !exactDailyTypeSet.has(ta) && !exactDailyTypeSet.has(tb) &&
+            domains[`${dm.iso}__${mm.id}`].includes(tb) &&
+            domains[`${dm2.iso}__${mm.id}`].includes(ta)
+          ) {
+            currentGrid[dm.iso][mm.id] = tb;
+            currentGrid[dm2.iso][mm.id] = ta;
+            const newEval = evaluateSchedule(currentGrid, dateMeta, activeMembers, dayTypes, desiderata, compiledRules);
+            const newObj = newEval.totalCost + computeSimilarityPenalty(currentGrid, previousGrid, dateMeta, activeMembers);
+            if (newObj <= currentObj || (newEval.hardPenalty <= currentEval.hardPenalty && rng() < Math.exp((currentObj - newObj) / temperature))) {
+              currentEval = newEval;
+              currentObj = newObj;
+              if (currentObj < globalBestObjective) {
+                globalBestObjective = currentObj;
+                globalBestGrid = cloneGrid(currentGrid);
+                globalBestEval = currentEval;
+              }
+            } else {
+              currentGrid[dm.iso][mm.id] = ta;
+              currentGrid[dm2.iso][mm.id] = tb;
+            }
+          }
+          continue;
+        }
+      }
+
+      // Mouvement 4 (reste) : Changer un membre entre BUREAU et TT (sans casser un quota exact de permanence)
+      const m = activeMembers[Math.floor(rng() * activeMembers.length)];
+      const dom = domains[`${dm.iso}__${m.id}`];
+      if (dom.length <= 1) continue;
+
+      const oldType = currentGrid[dm.iso][m.id];
+      if (exactDailyTypeSet.has(oldType) && currentEval.hardPenalty === 0) continue;
+
+      const candidates = dom.filter(t => t !== oldType && !exactDailyTypeSet.has(t));
+      if (candidates.length === 0) continue;
+      const newType = candidates[Math.floor(rng() * candidates.length)];
+
+      currentGrid[dm.iso][m.id] = newType;
+      const newEval = evaluateSchedule(currentGrid, dateMeta, activeMembers, dayTypes, desiderata, compiledRules);
+      const newObj = newEval.totalCost + computeSimilarityPenalty(currentGrid, previousGrid, dateMeta, activeMembers);
+
+      if (newObj <= currentObj || (newEval.hardPenalty <= currentEval.hardPenalty && rng() < Math.exp((currentObj - newObj) / temperature))) {
+        currentEval = newEval;
+        currentObj = newObj;
+        if (currentObj < globalBestObjective) {
+          globalBestObjective = currentObj;
+          globalBestGrid = cloneGrid(currentGrid);
+          globalBestEval = currentEval;
+        }
+      } else {
+        currentGrid[dm.iso][m.id] = oldType;
       }
     }
   }
@@ -962,9 +1104,16 @@ export function generateSchedule({
  * Calcule les statistiques par membre et par jour pour l'affichage récapitulatif.
  */
 export function computeScheduleStats(grid, dateMeta, members, dayTypes) {
+  const officeTypeSet = new Set(
+    dayTypes.filter(dt => dt.id === 'BUREAU' || (Array.isArray(dt.tags) && dt.tags.includes('bureau'))).map(dt => dt.id)
+  );
+  const permTypeSet = new Set(
+    dayTypes.filter(dt => Array.isArray(dt.tags) && dt.tags.includes('permanence')).map(dt => dt.id)
+  );
+
   const byMember = {};
   for (const m of members) {
-    byMember[m.id] = { totalWork: 0, byType: {} };
+    byMember[m.id] = { totalWork: 0, totalBureau: 0, totalPerm: 0, byType: {} };
     for (const dt of dayTypes) {
       byMember[m.id].byType[dt.id] = 0;
     }
@@ -972,7 +1121,7 @@ export function computeScheduleStats(grid, dateMeta, members, dayTypes) {
 
   const byDay = {};
   for (const dm of dateMeta) {
-    byDay[dm.iso] = {};
+    byDay[dm.iso] = { _totalBureau: 0, _totalPerm: 0 };
     for (const dt of dayTypes) {
       byDay[dm.iso][dt.id] = 0;
     }
@@ -980,8 +1129,13 @@ export function computeScheduleStats(grid, dateMeta, members, dayTypes) {
       const t = grid[dm.iso]?.[m.id];
       if (t) {
         byDay[dm.iso][t] = (byDay[dm.iso][t] || 0) + 1;
+        if (officeTypeSet.has(t)) byDay[dm.iso]._totalBureau++;
+        if (permTypeSet.has(t)) byDay[dm.iso]._totalPerm++;
+
         if (byMember[m.id]) {
           byMember[m.id].byType[t] = (byMember[m.id].byType[t] || 0) + 1;
+          if (officeTypeSet.has(t)) byMember[m.id].totalBureau++;
+          if (permTypeSet.has(t)) byMember[m.id].totalPerm++;
           const dtObj = dayTypes.find(d => d.id === t);
           if (dtObj?.isWorkingDay) {
             byMember[m.id].totalWork++;

@@ -3,6 +3,7 @@
  */
 
 import {
+  DEFAULT_WEEKS_COUNT,
   getDefaultDateRange,
   formatDateISO
 } from './defaults.js';
@@ -27,6 +28,7 @@ import {
   loadAppState,
   saveAppState,
   resetAppState,
+  computeRangeForWeeks,
   alignToFullWeeks,
   getDatesInRange,
   buildWeeksRows
@@ -149,7 +151,11 @@ function init() {
   bindRuleBuilderForm();
   bindModalEvents();
 
-  if (!getCurrentProposal()) {
+  const prop = getCurrentProposal();
+  const dateISOs = getEffectiveDateISOs();
+  const hasAllDates = prop && dateISOs.every(iso => prop.grid && prop.grid[iso]);
+
+  if (!prop || !hasAllDates) {
     runScheduleGenerator({ isAlternative: false });
   } else {
     refreshCurrentProposalEvaluation();
@@ -158,21 +164,30 @@ function init() {
 }
 
 function bindHeaderAndSettingsEvents() {
+  const weeksSelect = document.getElementById('select-weeks-count');
   const startInput = document.getElementById('input-start-date');
   const endInput = document.getElementById('input-end-date');
   const snapCheckbox = document.getElementById('chk-snap-weeks');
+  const sortSelect = document.getElementById('select-calendar-sort');
+
+  weeksSelect.addEventListener('change', () => {
+    const w = Number(weeksSelect.value);
+    if (!w || w < 1) return;
+    const range = computeRangeForWeeks(state.startDate, w, state.snapFullWeeks);
+    state.startDate = range.startDate;
+    state.endDate = range.endDate;
+    state.weeksCount = range.weeksCount;
+    saveAppState(state);
+    runScheduleGenerator({ isAlternative: false });
+  });
 
   startInput.addEventListener('change', () => {
     if (!startInput.value) return;
-    state.startDate = startInput.value;
-    if (state.endDate < state.startDate) {
-      state.endDate = state.startDate;
-    }
-    if (state.snapFullWeeks) {
-      const aligned = alignToFullWeeks(state.startDate, state.endDate);
-      state.startDate = aligned.startDate;
-      state.endDate = aligned.endDate;
-    }
+    const targetWeeks = state.weeksCount || DEFAULT_WEEKS_COUNT;
+    const range = computeRangeForWeeks(startInput.value, targetWeeks, state.snapFullWeeks);
+    state.startDate = range.startDate;
+    state.endDate = range.endDate;
+    state.weeksCount = range.weeksCount;
     saveAppState(state);
     runScheduleGenerator({ isAlternative: false });
   });
@@ -188,6 +203,8 @@ function bindHeaderAndSettingsEvents() {
       state.startDate = aligned.startDate;
       state.endDate = aligned.endDate;
     }
+    const weeksRows = buildWeeksRows(state.startDate, state.endDate);
+    state.weeksCount = Math.max(1, weeksRows.length);
     saveAppState(state);
     runScheduleGenerator({ isAlternative: false });
   });
@@ -211,8 +228,8 @@ function bindHeaderAndSettingsEvents() {
     shiftDateRangeDays(7);
   });
 
-  document.getElementById('btn-default-3weeks').addEventListener('click', () => {
-    const def = getDefaultDateRange();
+  document.getElementById('btn-default-period').addEventListener('click', () => {
+    const def = getDefaultDateRange(state.weeksCount || DEFAULT_WEEKS_COUNT);
     state.startDate = def.startDate;
     state.endDate = def.endDate;
     saveAppState(state);
@@ -247,20 +264,36 @@ function bindHeaderAndSettingsEvents() {
     }
   });
 
+  // Sélecteur de tri dans les cases du calendrier (par type de journée par défaut, ou par personne)
+  sortSelect.addEventListener('change', (e) => {
+    state.calendarSort = e.target.value === 'member' ? 'member' : 'type';
+    saveAppState(state);
+    renderCalendar();
+  });
+
+  // Bouton pour replier / déplier les week-ends
+  document.getElementById('btn-toggle-weekends').addEventListener('click', () => {
+    state.collapseWeekends = !state.collapseWeekends;
+    saveAppState(state);
+    updateWeekendsCollapsedState();
+  });
+
   // Sélecteur de pinceau / mode d'interaction
   document.getElementById('select-interaction-mode').addEventListener('change', (e) => {
     const val = e.target.value;
     const hint = document.getElementById('brush-hint');
-    if (val === 'inspect') {
-      hint.textContent = 'Cliquez sur un membre dans un jour du calendrier pour définir un désidérata ou modifier son horaire.';
-    } else if (val === 'clear_des') {
-      hint.textContent = 'Mode gomme : cliquez sur un membre dans le calendrier pour effacer son désidérata.';
-    } else if (val.startsWith('req:')) {
-      const dt = state.dayTypes.find(d => d.id === val.slice(4));
-      hint.textContent = `Pinceau actif : cliquez sur un membre pour demander/fixer "${dt ? dt.label : val.slice(4)}".`;
-    } else if (val.startsWith('forbid:')) {
-      const dt = state.dayTypes.find(d => d.id === val.slice(7));
-      hint.textContent = `Pinceau actif : cliquez sur un membre pour interdire "Pas de ${dt ? dt.label : val.slice(7)}".`;
+    if (hint) {
+      if (val === 'inspect') {
+        hint.textContent = 'Cliquez sur un membre dans un jour du calendrier pour définir un désidérata ou modifier son horaire.';
+      } else if (val === 'clear_des') {
+        hint.textContent = 'Mode gomme : cliquez sur un membre dans le calendrier pour effacer son désidérata.';
+      } else if (val.startsWith('req:')) {
+        const dt = state.dayTypes.find(d => d.id === val.slice(4));
+        hint.textContent = `Pinceau actif : cliquez sur un membre pour demander/fixer "${dt ? dt.label : val.slice(4)}".`;
+      } else if (val.startsWith('forbid:')) {
+        const dt = state.dayTypes.find(d => d.id === val.slice(7));
+        hint.textContent = `Pinceau actif : cliquez sur un membre pour interdire "Pas de ${dt ? dt.label : val.slice(7)}".`;
+      }
     }
   });
 
@@ -489,9 +522,13 @@ function bindRuleBuilderForm() {
       params.min = minVal !== '' ? Number(minVal) : null;
       params.max = maxVal !== '' ? Number(maxVal) : null;
     } else if (kind === 'sequence_transition') {
-      const trigType = document.getElementById('rb-trigger-type')?.value || 'GARDE_WE';
+      const trigType = document.getElementById('rb-trigger-type')?.value || 'CONGE';
       params.triggerTypes = [trigType];
-      params.offsetDays = Number(document.getElementById('rb-offset')?.value) || 1;
+      params.minTriggerStreak = Math.max(1, Number(document.getElementById('rb-min-streak')?.value) || 1);
+      params.direction = document.getElementById('rb-direction')?.value === 'before' ? 'before' : 'after';
+      const offset = Math.abs(Number(document.getElementById('rb-offset')?.value) || 1);
+      params.offsetDays = params.direction === 'before' ? -offset : offset;
+      params.skipWeekends = document.getElementById('rb-skip-weekends')?.checked ?? true;
       params.mode = document.getElementById('rb-mode')?.value || 'forbid';
       params.targetTypes = targetTypes;
       params.targetMembers = 'all';
@@ -519,6 +556,16 @@ function bindRuleBuilderForm() {
     } else if (kind === 'fairness_balance') {
       params.targetTypes = targetTypes;
       params.targetMembers = 'all';
+    } else if (kind === 'daily_balance') {
+      params.dayFilter = document.getElementById('rb-day-filter')?.value || 'weekday';
+      params.groupATypes = Array.from(document.querySelectorAll('input[name="rb-group-a"]:checked')).map(el => el.value);
+      params.groupBTypes = Array.from(document.querySelectorAll('input[name="rb-group-b"]:checked')).map(el => el.value);
+    } else if (kind === 'max_consecutive_weekends') {
+      params.maxConsecutiveWeekends = Number(document.getElementById('rb-max-weekends')?.value) || 1;
+      params.targetTypes = targetTypes;
+      const memberSel = document.getElementById('rb-member')?.value || 'all';
+      params.targetMembers = memberSel === 'all' ? 'all' : [memberSel];
+      params.mode = 'forbid_service';
     }
 
     const newRule = normalizeRule({
@@ -603,15 +650,32 @@ function renderRuleDynamicParams() {
   } else if (kind === 'sequence_transition') {
     html = `
       <div class="form-field">
-        <label>Si le jour J est</label>
+        <label>Séquence déclencheuse</label>
         <select id="rb-trigger-type">${typeOptions}</select>
       </div>
       <div class="form-field">
-        <label>Décalage (J+N)</label>
+        <label>Longueur min. (jours consécutifs)</label>
+        <input type="number" id="rb-min-streak" min="1" max="30" value="1" style="width:70px;" />
+      </div>
+      <div class="form-field">
+        <label>Position</label>
+        <select id="rb-direction">
+          <option value="after">Après la séquence</option>
+          <option value="before">Avant la séquence</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Décalage (N jours)</label>
         <input type="number" id="rb-offset" min="1" max="7" value="1" style="width:70px;" />
       </div>
       <div class="form-field">
-        <label>Action sur J+N</label>
+        <label class="checkbox-inline">
+          <input type="checkbox" id="rb-skip-weekends" checked />
+          <span>Ignorer les weekends (jours ouvrés)</span>
+        </label>
+      </div>
+      <div class="form-field">
+        <label>Action sur le jour visé</label>
         <select id="rb-mode">
           <option value="forbid">Interdire les types cochés</option>
           <option value="require">Imposer l'un des types cochés</option>
@@ -709,6 +773,46 @@ function renderRuleDynamicParams() {
         <div class="chips-group">${typeCheckboxes}</div>
       </div>
     `;
+  } else if (kind === 'daily_balance') {
+    const groupChecks = (name, defaults) => state.dayTypes.map(dt => `
+      <label class="checkbox-inline">
+        <input type="checkbox" name="${name}" value="${dt.id}" ${defaults.includes(dt.id) ? 'checked' : ''} />
+        <span>${dt.shortLabel}</span>
+      </label>
+    `).join('');
+    html = `
+      <div class="form-field">
+        <label>Jours concernés</label>
+        <select id="rb-day-filter">
+          <option value="weekday">Jours de semaine (Lun–Ven)</option>
+          <option value="weekend">Weekend (Sam–Dim)</option>
+          <option value="all">Tous les jours</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Groupe A (ex : présentiel)</label>
+        <div class="chips-group">${groupChecks('rb-group-a', ['BUREAU', 'BUREAU_MATIN', 'BUREAU_MIDI', 'BUREAU_SOIR'])}</div>
+      </div>
+      <div class="form-field">
+        <label>Groupe B (ex : télétravail)</label>
+        <div class="chips-group">${groupChecks('rb-group-b', ['TT'])}</div>
+      </div>
+    `;
+  } else if (kind === 'max_consecutive_weekends') {
+    html = `
+      <div class="form-field">
+        <label>Nombre maximum de weekends consécutifs de service</label>
+        <input type="number" id="rb-max-weekends" min="1" max="10" value="1" style="width:70px;" />
+      </div>
+      <div class="form-field">
+        <label>Membres concernés</label>
+        <select id="rb-member">${memberOptions}</select>
+      </div>
+      <div class="form-field">
+        <label>Types considérés comme repos (non-service)</label>
+        <div class="chips-group">${typeCheckboxes}</div>
+      </div>
+    `;
   }
 
   container.innerHTML = html;
@@ -732,6 +836,24 @@ function renderTopBar() {
   document.getElementById('input-start-date').value = state.startDate;
   document.getElementById('input-end-date').value = state.endDate;
   document.getElementById('chk-snap-weeks').checked = Boolean(state.snapFullWeeks);
+
+  const weeksSelect = document.getElementById('select-weeks-count');
+  const displayedWeeks = buildWeeksRows(state.startDate, state.endDate).length;
+  const weeksStr = String(displayedWeeks);
+  const customOpt = weeksSelect.querySelector('option[value="custom"]');
+  if (Array.from(weeksSelect.options).some(o => o.value === weeksStr)) {
+    weeksSelect.value = weeksStr;
+    if (customOpt) customOpt.hidden = true;
+  } else if (customOpt) {
+    customOpt.hidden = false;
+    customOpt.textContent = `${displayedWeeks} sem. (libre)`;
+    weeksSelect.value = 'custom';
+  }
+
+  const sortSelect = document.getElementById('select-calendar-sort');
+  if (sortSelect) {
+    sortSelect.value = state.calendarSort === 'member' ? 'member' : 'type';
+  }
 
   const activeMembersCount = state.members.filter(m => m.active !== false).length;
   const activeRulesCount = state.rules.filter(r => r.enabled !== false).length;
@@ -761,15 +883,15 @@ function renderInteractionBrushOptions() {
   const currentVal = select.value || 'inspect';
 
   const reqOptions = state.dayTypes
-    .map(dt => `<option value="req:${dt.id}">🔒 Pinceau Désidérata : Demander "${dt.label}"</option>`)
+    .map(dt => `<option value="req:${dt.id}">Pinceau Désidérata : Demander « ${dt.label} »</option>`)
     .join('');
 
   const forbidOptions = state.dayTypes
-    .map(dt => `<option value="forbid:${dt.id}">🚫 Pinceau Désidérata : Pas de "${dt.label}"</option>`)
+    .map(dt => `<option value="forbid:${dt.id}">Pinceau Désidérata : Pas de « ${dt.label} »</option>`)
     .join('');
 
   select.innerHTML = `
-    <option value="inspect">🔍 Menu complet (Désidérata + Changer l'affectation)</option>
+    <option value="inspect">Menu complet (Désidérata + Changer l'affectation)</option>
     <optgroup label="Saisie rapide : Demander / Fixer un type">
       ${reqOptions}
     </optgroup>
@@ -777,7 +899,7 @@ function renderInteractionBrushOptions() {
       ${forbidOptions}
     </optgroup>
     <optgroup label="Effacer">
-      <option value="clear_des">🧹 Gomme : Effacer le désidérata cliqué</option>
+      <option value="clear_des">Gomme : Effacer le désidérata cliqué</option>
     </optgroup>
   `;
 
@@ -802,7 +924,7 @@ function renderMembersDrawer() {
           <input type="checkbox" data-toggle-member="${m.id}" ${m.active !== false ? 'checked' : ''} />
           <span>Actif</span>
         </label>
-        <button type="button" class="btn btn-danger-ghost btn-xs" data-delete-member="${m.id}" title="Supprimer">🗑️</button>
+        <button type="button" class="btn btn-danger-ghost btn-xs" data-delete-member="${m.id}" title="Supprimer">✕</button>
       </div>
     </div>
   `).join('');
@@ -848,7 +970,7 @@ function renderTypesDrawer() {
         </div>
       </div>
       <div class="btn-row">
-        <button type="button" class="btn btn-danger-ghost btn-xs" data-delete-type="${dt.id}" title="Supprimer ce type">🗑️</button>
+        <button type="button" class="btn btn-danger-ghost btn-xs" data-delete-type="${dt.id}" title="Supprimer ce type">✕</button>
       </div>
     </div>
   `).join('');
@@ -895,7 +1017,7 @@ function renderRulesDrawer() {
           </div>
         </div>
         <div class="btn-row">
-          <button type="button" class="btn btn-danger-ghost btn-xs" data-delete-rule="${rule.id}" title="Supprimer cette règle">🗑️</button>
+          <button type="button" class="btn btn-danger-ghost btn-xs" data-delete-rule="${rule.id}" title="Supprimer cette règle">✕</button>
         </div>
       </div>
     `;
@@ -941,13 +1063,13 @@ function renderDesiderataDrawer() {
     let descHtml = '';
     if (des.requiredType) {
       const dt = state.dayTypes.find(d => d.id === des.requiredType);
-      descHtml = `<span style="color:#1e40af;font-weight:600;">🔒 Demandé : ${escapeHtml(dt ? dt.label : des.requiredType)}</span>`;
+      descHtml = `<span style="color:#1e40af;font-weight:600;">Demandé : ${escapeHtml(dt ? dt.label : des.requiredType)}</span>`;
     } else if (des.forbiddenTypes?.length > 0) {
       const names = des.forbiddenTypes.map(t => {
         const dt = state.dayTypes.find(d => d.id === t);
         return dt ? dt.shortLabel : t;
       }).join(', ');
-      descHtml = `<span style="color:#991b1b;font-weight:600;">🚫 Interdit : Pas de ${escapeHtml(names)}</span>`;
+      descHtml = `<span style="color:#991b1b;font-weight:600;">Interdit : Pas de ${escapeHtml(names)}</span>`;
     }
 
     return `
@@ -973,6 +1095,7 @@ function renderDesiderataDrawer() {
 
 /**
  * Rendu du calendrier principal : UNE SEMAINE PAR LIGNE (7 colonnes Lun->Dim).
+ * Par défaut, les lignes dans chaque jour sont triées par type de journée (state.calendarSort === 'type').
  */
 function renderCalendar() {
   const body = document.getElementById('calendar-weeks-body');
@@ -983,6 +1106,9 @@ function renderCalendar() {
   const violations = prop?.evaluation?.hardViolations || [];
 
   const typeMap = new Map(state.dayTypes.map(dt => [dt.id, dt]));
+  const typeOrderMap = new Map(state.dayTypes.map((dt, idx) => [dt.id, idx]));
+  const memberOrderMap = new Map(activeMembers.map((m, idx) => [m.id, idx]));
+  const sortByType = state.calendarSort !== 'member';
 
   body.innerHTML = weeks.map(week => {
     const startD = week.days[0];
@@ -1010,7 +1136,19 @@ function renderCalendar() {
           </span>
         `).join('');
 
-      const membersHtml = activeMembers.map(m => {
+      // Tri des membres du jour : par type de journée (défaut) ou par personne
+      const sortedMembersForDay = sortByType
+        ? [...activeMembers].sort((a, b) => {
+            const tA = grid[day.iso]?.[a.id];
+            const tB = grid[day.iso]?.[b.id];
+            const oA = tA !== undefined && typeOrderMap.has(tA) ? typeOrderMap.get(tA) : 999;
+            const oB = tB !== undefined && typeOrderMap.has(tB) ? typeOrderMap.get(tB) : 999;
+            if (oA !== oB) return oA - oB;
+            return (memberOrderMap.get(a.id) ?? 0) - (memberOrderMap.get(b.id) ?? 0);
+          })
+        : activeMembers;
+
+      const membersHtml = sortedMembersForDay.map(m => {
         const key = `${day.iso}__${m.id}`;
         const des = state.desiderata?.[key];
         const assignedId = grid[day.iso]?.[m.id];
@@ -1048,8 +1186,15 @@ function renderCalendar() {
         `;
       }).join('');
 
+      const weekendCollapsedHtml = day.isWeekend ? `
+        <div class="weekend-collapsed-badge" title="Week-end replié. Cliquez pour déplier/replier les week-ends.">
+          <span>${DOW_SHORT_FR[day.dow]}</span>
+          <span>${day.dayNum}</span>
+        </div>
+      ` : '';
+
       return `
-        <div class="day-cell ${day.isWeekend ? 'weekend' : 'weekday'} ${!day.inRange ? 'out-of-range' : ''} ${hasViolation ? 'has-violation' : ''}">
+        <div class="day-cell ${day.isWeekend ? 'weekend' : 'weekday'} ${!day.inRange ? 'out-of-range' : ''} ${hasViolation ? 'has-violation' : ''}" data-day-iso="${day.iso}">
           <div class="day-cell-header">
             <span class="day-date-title">
               ${DOW_SHORT_FR[day.dow]} ${day.dayNum} ${MONTHS_SHORT_FR[day.monthNum - 1]}
@@ -1057,6 +1202,7 @@ function renderCalendar() {
             </span>
             <div class="day-quotas-mini">${miniPillsHtml}</div>
           </div>
+          ${weekendCollapsedHtml}
           <div class="day-members-list">
             ${membersHtml}
           </div>
@@ -1075,14 +1221,54 @@ function renderCalendar() {
     `;
   }).join('');
 
+  updateWeekendsCollapsedState();
+
+  // Permet de déplier en cliquant sur l'en-tête de colonne week-end ou une cellule de week-end repliée
+  body.querySelectorAll('.day-cell.weekend').forEach(cell => {
+    cell.addEventListener('click', (e) => {
+      if (state.collapseWeekends && !e.target.closest('.member-slot')) {
+        state.collapseWeekends = false;
+        saveAppState(state);
+        updateWeekendsCollapsedState();
+      }
+    });
+  });
+
+  document.querySelectorAll('.col-weekend').forEach(headerCol => {
+    headerCol.addEventListener('click', () => {
+      state.collapseWeekends = !state.collapseWeekends;
+      saveAppState(state);
+      updateWeekendsCollapsedState();
+    });
+  });
+
   // Écouteurs de clic sur chaque slot membre d'un jour
   body.querySelectorAll('[data-cell-date][data-cell-member]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       const dateIso = btn.getAttribute('data-cell-date');
       const memberId = btn.getAttribute('data-cell-member');
       handleCalendarCellClick(dateIso, memberId);
     });
   });
+}
+
+function updateWeekendsCollapsedState() {
+  const container = document.querySelector('.calendar-container');
+  const btnLabel = document.getElementById('btn-toggle-weekends-label');
+  const isCollapsed = state.collapseWeekends !== false;
+
+  if (container) {
+    if (isCollapsed) {
+      container.classList.add('weekends-collapsed');
+    } else {
+      container.classList.remove('weekends-collapsed');
+    }
+  }
+
+  if (btnLabel) {
+    btnLabel.textContent = isCollapsed ? 'Week-end (replié)' : 'Week-end (déplié)';
+  }
 }
 
 function handleCalendarCellClick(dateIso, memberId) {

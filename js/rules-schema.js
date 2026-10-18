@@ -9,8 +9,8 @@ export const RULE_KINDS = {
     description: 'Impose un nombre minimum, maximum ou exact de personnes affectées à certains types de journées chaque jour.',
     defaultParams: {
       dayFilter: 'weekday',
-      targetTypes: ['BUREAU'],
-      min: 3,
+      targetTypes: ['BUREAU', 'BUREAU_MATIN', 'BUREAU_MIDI', 'BUREAU_SOIR'],
+      min: 4,
       max: null
     }
   },
@@ -19,21 +19,41 @@ export const RULE_KINDS = {
     description: 'Limite ou impose un nombre de jours d\'un certain type par personne sur chaque semaine ou sur toute la période.',
     defaultParams: {
       period: 'week',
-      dayFilter: 'all',
-      targetTypes: ['TT', 'TT_PERM'],
+      dayFilter: 'weekday',
+      targetTypes: ['TT'],
       targetMembers: 'all',
       min: 0,
       max: 2
     }
   },
   sequence_transition: {
-    label: 'Enchaînement / Succession de jours',
-    description: 'Interdit ou impose certains types de journées le(s) jour(s) suivant un type de journée donné (ex: après une garde weekend).',
+    label: 'Enchaînement / Avant ou Après une absence ou garde',
+    description: 'Interdit ou impose certains types de journées avant ou après une séquence d\'au moins N jours d\'un type donné (ex: congé > 2 jours, maladie).',
     defaultParams: {
-      triggerTypes: ['GARDE_WE'],
+      triggerTypes: ['CONGE'],
+      minTriggerStreak: 3,
+      direction: 'after', // 'before' | 'after'
       offsetDays: 1,
+      skipWeekends: true,
       mode: 'forbid',
-      targetTypes: ['TT', 'TT_PERM'],
+      targetTypes: ['TT'],
+      targetMembers: 'all'
+    }
+  },
+  daily_balance: {
+    label: 'Équilibre quotidien entre deux groupes (ex: Bureau vs Télétravail)',
+    description: 'Équilibre chaque jour le nombre de personnes entre deux ensembles de types de journées (hors congés et maladies).',
+    defaultParams: {
+      dayFilter: 'weekday',
+      groupATypes: ['BUREAU', 'BUREAU_MATIN', 'BUREAU_MIDI', 'BUREAU_SOIR'],
+      groupBTypes: ['TT']
+    }
+  },
+  fairness_balance: {
+    label: 'Équité de répartition entre les membres sur la période',
+    description: 'Équilibre équitablement le nombre d\'attributions de chaque type ciblé et du total entre tous les membres sur la période.',
+    defaultParams: {
+      targetTypes: ['BUREAU_MATIN', 'BUREAU_MIDI', 'BUREAU_SOIR'],
       targetMembers: 'all'
     }
   },
@@ -41,7 +61,7 @@ export const RULE_KINDS = {
     label: 'Nombre maximum de jours consécutifs',
     description: 'Empêche un membre d\'enchaîner plus de N jours consécutifs d\'un type donné.',
     defaultParams: {
-      targetTypes: ['TT', 'TT_PERM'],
+      targetTypes: ['TT'],
       maxConsecutive: 2,
       skipWeekends: false,
       targetMembers: 'all'
@@ -49,37 +69,39 @@ export const RULE_KINDS = {
   },
   weekend_pair_consistency: {
     label: 'Continuité sur le weekend (Samedi + Dimanche)',
-    description: 'Impose que la même personne assure à la fois le samedi et le dimanche pour les types sélectionnés (ex: Garde weekend).',
+    description: 'Impose que la même personne assure à la fois le samedi et le dimanche pour les types sélectionnés.',
     defaultParams: {
-      targetTypes: ['GARDE_WE']
+      targetTypes: ['REPOS']
+    }
+  },
+  max_consecutive_weekends: {
+    label: 'Repos entre weekends de service',
+    description: 'Empêche une même personne d\'assurer un service deux weekends de suite (ex: au maximum 1 weekend consécutif).',
+    defaultParams: {
+      targetTypes: ['REPOS'],
+      maxConsecutiveWeekends: 1,
+      mode: 'forbid_service', // forbid_service : interdit d'enchaîner le travail / service le weekend
+      targetMembers: 'all'
     }
   },
   member_day_restriction: {
     label: 'Règle récurrente par jour de la semaine',
-    description: 'Interdit ou impose un type de journée certains jours de la semaine (ex: pas de télétravail le lundi, ou temps partiel le mercredi).',
+    description: 'Interdit ou impose un type de journée certains jours de la semaine (ex: pas de télétravail le mercredi).',
     defaultParams: {
       daysOfWeek: [3], // 1=Lun, 2=Mar, 3=Mer, 4=Jeu, 5=Ven, 6=Sam, 0=Dim
       mode: 'forbid',
-      targetTypes: ['TT', 'TT_PERM'],
+      targetTypes: ['TT'],
       targetMembers: 'all'
     }
   },
   member_compatibility: {
     label: 'Compatibilité / Binômage entre membres',
-    description: 'Empêche ou impose que certains membres soient simultanément sur le même type de journée (ex: pas en télétravail en même temps).',
+    description: 'Empêche ou impose que certains membres soient simultanément sur le même type de journée.',
     defaultParams: {
       dayFilter: 'weekday',
       mode: 'not_together', // 'not_together' | 'together' | 'at_least_one'
-      targetTypes: ['TT', 'TT_PERM'],
+      targetTypes: ['TT'],
       targetMembers: []
-    }
-  },
-  fairness_balance: {
-    label: 'Équité de répartition entre les membres',
-    description: 'Équilibre équitablement le nombre d\'attributions de certains types de journées entre tous les membres sur la période.',
-    defaultParams: {
-      targetTypes: ['TT', 'TT_PERM', 'GARDE_WE'],
-      targetMembers: 'all'
     }
   }
 };
@@ -199,12 +221,19 @@ export function normalizeRule(rawRule, index = 0) {
     sequence: 'sequence_transition',
     after_duty: 'sequence_transition',
     enchainement: 'sequence_transition',
+    daily_ratio: 'daily_balance',
+    equilibre_jour: 'daily_balance',
     consecutive: 'max_consecutive_days',
     max_consecutive: 'max_consecutive_days',
     jours_consecutifs: 'max_consecutive_days',
     weekend_pair: 'weekend_pair_consistency',
     weekend_consistency: 'weekend_pair_consistency',
     same_weekend: 'weekend_pair_consistency',
+    consecutive_weekends: 'max_consecutive_weekends',
+    max_weekends: 'max_consecutive_weekends',
+    weekends_consecutifs: 'max_consecutive_weekends',
+    repos_weekend: 'max_consecutive_weekends',
+    service_weekend: 'max_consecutive_weekends',
     day_restriction: 'member_day_restriction',
     recurring_day: 'member_day_restriction',
     jour_semaine: 'member_day_restriction',
@@ -252,7 +281,7 @@ export function normalizeRule(rawRule, index = 0) {
     }
     case 'member_period_count': {
       params.period = p.period === 'horizon' || p.period === 'total' ? 'horizon' : 'week';
-      params.dayFilter = p.dayFilter || 'all';
+      params.dayFilter = p.dayFilter || 'weekday';
       params.targetTypes = Array.isArray(targetTypesRaw) ? targetTypesRaw : (targetTypesRaw ? [targetTypesRaw] : ['TT']);
       params.targetMembers = p.targetMembers || p.members || 'all';
       if (p.exact !== undefined && p.exact !== null && p.exact !== '') {
@@ -265,13 +294,25 @@ export function normalizeRule(rawRule, index = 0) {
       break;
     }
     case 'sequence_transition': {
-      const trig = p.triggerTypes || p.fromTypes || p.afterTypes || p.trigger || ['GARDE_WE'];
+      const trig = p.triggerTypes || p.fromTypes || p.afterTypes || p.trigger || ['CONGE'];
       params.triggerTypes = Array.isArray(trig) ? trig : [trig];
-      params.offsetDays = Number.isFinite(Number(p.offsetDays)) ? Number(p.offsetDays) : 1;
+      params.minTriggerStreak = Math.max(1, Number(p.minTriggerStreak || p.minStreak || p.minDays) || 1);
+      const rawOffset = Number.isFinite(Number(p.offsetDays)) ? Number(p.offsetDays) : 1;
+      params.direction = (p.direction === 'before' || rawOffset < 0) ? 'before' : 'after';
+      params.offsetDays = params.direction === 'before' ? -Math.abs(rawOffset || 1) : Math.abs(rawOffset || 1);
+      params.skipWeekends = p.skipWeekends !== undefined ? Boolean(p.skipWeekends) : true;
       params.mode = (p.mode === 'require' || p.mode === 'must') ? 'require' : 'forbid';
-      const targ = p.targetTypes || p.forbidTypes || p.requireTypes || p.toTypes || ['TT', 'TT_PERM'];
+      const targ = p.targetTypes || p.forbidTypes || p.requireTypes || p.toTypes || ['TT'];
       params.targetTypes = Array.isArray(targ) ? targ : [targ];
       params.targetMembers = p.targetMembers || p.members || 'all';
+      break;
+    }
+    case 'daily_balance': {
+      params.dayFilter = p.dayFilter || 'weekday';
+      const gA = p.groupATypes || p.officeTypes || ['BUREAU', 'BUREAU_MATIN', 'BUREAU_MIDI', 'BUREAU_SOIR'];
+      const gB = p.groupBTypes || p.remoteTypes || ['TT'];
+      params.groupATypes = Array.isArray(gA) ? gA : [gA];
+      params.groupBTypes = Array.isArray(gB) ? gB : [gB];
       break;
     }
     case 'max_consecutive_days': {
@@ -282,7 +323,16 @@ export function normalizeRule(rawRule, index = 0) {
       break;
     }
     case 'weekend_pair_consistency': {
-      params.targetTypes = Array.isArray(targetTypesRaw) ? targetTypesRaw : (targetTypesRaw ? [targetTypesRaw] : ['GARDE_WE']);
+      params.targetTypes = Array.isArray(targetTypesRaw) ? targetTypesRaw : (targetTypesRaw ? [targetTypesRaw] : ['REPOS']);
+      break;
+    }
+    case 'max_consecutive_weekends': {
+      params.targetTypes = Array.isArray(targetTypesRaw) ? targetTypesRaw : (targetTypesRaw ? [targetTypesRaw] : ['REPOS']);
+      params.maxConsecutiveWeekends = Number.isFinite(Number(p.maxConsecutiveWeekends || p.maxConsecutive || p.max))
+        ? Number(p.maxConsecutiveWeekends || p.maxConsecutive || p.max)
+        : 1;
+      params.mode = p.mode || 'forbid_service';
+      params.targetMembers = p.targetMembers || p.members || 'all';
       break;
     }
     case 'member_day_restriction': {
@@ -301,7 +351,7 @@ export function normalizeRule(rawRule, index = 0) {
       break;
     }
     case 'fairness_balance': {
-      params.targetTypes = Array.isArray(targetTypesRaw) ? targetTypesRaw : (targetTypesRaw ? [targetTypesRaw] : ['TT', 'GARDE_WE']);
+      params.targetTypes = Array.isArray(targetTypesRaw) ? targetTypesRaw : (targetTypesRaw ? [targetTypesRaw] : ['BUREAU_MATIN', 'BUREAU_MIDI', 'BUREAU_SOIR']);
       params.targetMembers = p.targetMembers || p.members || 'all';
       break;
     }
@@ -381,12 +431,20 @@ export function summarizeRuleParams(rule, dayTypes, members) {
     }
     case 'sequence_transition': {
       const act = p.mode === 'require' ? 'impose' : 'interdit';
-      return `J+${p.offsetDays || 1} après [${formatTypes(p.triggerTypes)}] ➔ ${act} [${formatTypes(p.targetTypes)}] (${formatMembers(p.targetMembers)})`;
+      const posLabel = (p.direction === 'before' || (p.offsetDays && p.offsetDays < 0)) ? 'Avant' : 'Après';
+      const streakLabel = (p.minTriggerStreak && p.minTriggerStreak > 1)
+        ? `≥ ${p.minTriggerStreak} j. de [${formatTypes(p.triggerTypes)}]`
+        : `[${formatTypes(p.triggerTypes)}]`;
+      return `${posLabel} ${streakLabel} ➔ ${act} [${formatTypes(p.targetTypes)}] (${formatMembers(p.targetMembers)})`;
     }
+    case 'daily_balance':
+      return `${filterLabel} : équilibrer [${formatTypes(p.groupATypes)}] et [${formatTypes(p.groupBTypes)}] (hors absences)`;
     case 'max_consecutive_days':
       return `Max. ${p.maxConsecutive} jours consécutifs de [${formatTypes(p.targetTypes)}] (${formatMembers(p.targetMembers)})`;
     case 'weekend_pair_consistency':
       return `Même personne Samedi & Dimanche pour [${formatTypes(p.targetTypes)}]`;
+    case 'max_consecutive_weekends':
+      return `Max. ${p.maxConsecutiveWeekends} weekend(s) de service consécutif(s) (${formatMembers(p.targetMembers)})`;
     case 'member_day_restriction': {
       const days = (p.daysOfWeek || []).map(d => DAY_NAMES_FR[d] || d).join(', ');
       const act = p.mode === 'require' ? 'impose' : 'interdit';
@@ -397,7 +455,7 @@ export function summarizeRuleParams(rule, dayTypes, members) {
       return `${formatMembers(p.targetMembers)} : ${modeStr} sur [${formatTypes(p.targetTypes)}] (${filterLabel})`;
     }
     case 'fairness_balance':
-      return `Équilibrer équitablement [${formatTypes(p.targetTypes)}] entre ${formatMembers(p.targetMembers)}`;
+      return `Même nombre de chaque type [${formatTypes(p.targetTypes)}] entre ${formatMembers(p.targetMembers)} sur la période`;
     default:
       return rule.description || rule.name;
   }
@@ -438,21 +496,25 @@ Chaque règle est un objet JSON de la forme :
 
 Types "kind" disponibles et leurs "params" :
 1. "daily_headcount" (Quotas par jour) :
-   params: { "dayFilter": "weekday" | "weekend" | "all" | [1,2,3,4,5], "targetTypes": ["BUREAU"], "min": 3, "max": null }
+   params: { "dayFilter": "weekday" | "weekend" | "all", "targetTypes": ["BUREAU", "BUREAU_MATIN", "BUREAU_MIDI", "BUREAU_SOIR"], "min": 4, "max": null }
 2. "member_period_count" (Quota par personne par semaine ou sur toute la période) :
-   params: { "period": "week" | "horizon", "dayFilter": "all", "targetTypes": ["TT", "TT_PERM"], "targetMembers": "all" | ["NomMembre"], "min": 0, "max": 2 }
-3. "sequence_transition" (Enchaînement de jours, ex: lendemain de garde) :
-   params: { "triggerTypes": ["GARDE_WE"], "offsetDays": 1, "mode": "forbid" | "require", "targetTypes": ["TT", "TT_PERM"], "targetMembers": "all" }
-4. "max_consecutive_days" (Maximum de jours consécutifs d'un type) :
-   params: { "targetTypes": ["TT", "TT_PERM"], "maxConsecutive": 2, "skipWeekends": false, "targetMembers": "all" }
-5. "weekend_pair_consistency" (Même personne tout le weekend Samedi + Dimanche) :
-   params: { "targetTypes": ["GARDE_WE"] }
-6. "member_day_restriction" (Interdiction ou obligation certains jours de la semaine : 1=Lundi..5=Vendredi, 6=Samedi, 0=Dimanche) :
+   params: { "period": "week" | "horizon", "dayFilter": "weekday", "targetTypes": ["TT"], "targetMembers": "all" | ["NomMembre"], "min": 0, "max": 2 }
+3. "sequence_transition" (Avant ou après une séquence d'au moins minTriggerStreak jours d'un type donné, ex: congé > 2 jours => minTriggerStreak: 3) :
+   params: { "triggerTypes": ["CONGE"], "minTriggerStreak": 3, "direction": "before" | "after", "offsetDays": -1 | 1, "skipWeekends": true, "mode": "forbid" | "require", "targetTypes": ["TT"], "targetMembers": "all" }
+4. "daily_balance" (Équilibrer chaque jour l'effectif entre deux groupes de types, hors congé/maladie) :
+   params: { "dayFilter": "weekday", "groupATypes": ["BUREAU", "BUREAU_MATIN", "BUREAU_MIDI", "BUREAU_SOIR"], "groupBTypes": ["TT"] }
+5. "fairness_balance" (Équilibrage équitable des compteurs entre les membres sur la période, par type et au total) :
+   params: { "targetTypes": ["BUREAU_MATIN", "BUREAU_MIDI", "BUREAU_SOIR"], "targetMembers": "all" }
+6. "max_consecutive_days" (Maximum de jours consécutifs d'un type) :
+   params: { "targetTypes": ["TT"], "maxConsecutive": 2, "skipWeekends": false, "targetMembers": "all" }
+7. "weekend_pair_consistency" (Même personne tout le weekend Samedi + Dimanche) :
+   params: { "targetTypes": ["REPOS"] }
+8. "max_consecutive_weekends" (Pas de service week-end deux week-ends de suite pour la même personne) :
+   params: { "targetTypes": ["REPOS"], "maxConsecutiveWeekends": 1, "targetMembers": "all" }
+9. "member_day_restriction" (Interdiction ou obligation certains jours de la semaine : 1=Lundi..5=Vendredi, 6=Samedi, 0=Dimanche) :
    params: { "daysOfWeek": [3], "mode": "forbid" | "require", "targetTypes": ["TT"], "targetMembers": ["Martine"] }
-7. "member_compatibility" (Membres qui ne peuvent pas avoir le même type le même jour, ou doivent être ensemble) :
-   params: { "dayFilter": "weekday", "mode": "not_together" | "together" | "at_least_one", "targetTypes": ["TT", "TT_PERM"], "targetMembers": ["Martine", "Louis"] }
-8. "fairness_balance" (Équilibrage équitable des compteurs entre les membres) :
-   params: { "targetTypes": ["TT", "TT_PERM", "GARDE_WE"], "targetMembers": "all" }
+10. "member_compatibility" (Membres qui ne peuvent pas avoir le même type le même jour, ou doivent être ensemble) :
+   params: { "dayFilter": "weekday", "mode": "not_together" | "together" | "at_least_one", "targetTypes": ["TT"], "targetMembers": ["Martine", "Louis"] }
 
 ### 4. Règles actuellement actives (pour référence) :
 ${JSON.stringify(currentRules, null, 2)}

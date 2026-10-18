@@ -5,6 +5,7 @@
 
 import {
   STORAGE_KEY,
+  DEFAULT_WEEKS_COUNT,
   getDefaultDateRange,
   formatDateISO,
   DEFAULT_MEMBERS,
@@ -14,15 +15,42 @@ import {
 import { normalizeRule } from './rules-schema.js';
 
 /**
+ * Calcule une plage de N semaines à partir d'une date de début.
+ */
+export function computeRangeForWeeks(startIso, weeksCount = DEFAULT_WEEKS_COUNT, snapFullWeeks = true) {
+  const validWeeks = Math.max(1, Math.min(26, Number(weeksCount) || DEFAULT_WEEKS_COUNT));
+  const [sy, sm, sd] = startIso.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd, 12, 0, 0);
+
+  if (snapFullWeeks) {
+    const startDow = start.getDay();
+    const diffToMonday = startDow === 0 ? -6 : 1 - startDow;
+    start.setDate(start.getDate() + diffToMonday);
+  }
+
+  const end = new Date(start);
+  end.setDate(start.getDate() + validWeeks * 7 - 1);
+
+  return {
+    startDate: formatDateISO(start),
+    endDate: formatDateISO(end),
+    weeksCount: validWeeks
+  };
+}
+
+/**
  * Charge l'état complet depuis le localStorage du navigateur,
  * ou initialise avec les valeurs par défaut.
  */
 export function loadAppState() {
-  const defaultRange = getDefaultDateRange();
+  const defaultRange = getDefaultDateRange(DEFAULT_WEEKS_COUNT);
   const baseState = {
     startDate: defaultRange.startDate,
     endDate: defaultRange.endDate,
+    weeksCount: DEFAULT_WEEKS_COUNT,
     snapFullWeeks: true,
+    collapseWeekends: true,
+    calendarSort: 'type', // 'type' (par défaut) | 'member'
     members: structuredClone(DEFAULT_MEMBERS),
     dayTypes: structuredClone(DEFAULT_DAY_TYPES),
     rules: structuredClone(DEFAULT_RULES),
@@ -37,10 +65,29 @@ export function loadAppState() {
     if (!raw) return createSampleDesiderata(baseState);
     const parsed = JSON.parse(raw);
 
+    const snapFullWeeks = parsed.snapFullWeeks !== undefined ? Boolean(parsed.snapFullWeeks) : true;
+    const collapseWeekends = parsed.collapseWeekends !== undefined ? Boolean(parsed.collapseWeekends) : true;
+    let startDate = parsed.startDate || baseState.startDate;
+    let endDate = parsed.endDate || baseState.endDate;
+    let weeksCount = typeof parsed.weeksCount === 'number' && parsed.weeksCount >= 1
+      ? parsed.weeksCount
+      : DEFAULT_WEEKS_COUNT;
+
+    // Migration douce : si l'état précédent n'avait pas weeksCount enregistré, appliquer 2 semaines par défaut
+    if (parsed.weeksCount === undefined) {
+      const migratedRange = computeRangeForWeeks(startDate, DEFAULT_WEEKS_COUNT, snapFullWeeks);
+      startDate = migratedRange.startDate;
+      endDate = migratedRange.endDate;
+      weeksCount = DEFAULT_WEEKS_COUNT;
+    }
+
     return {
-      startDate: parsed.startDate || baseState.startDate,
-      endDate: parsed.endDate || baseState.endDate,
-      snapFullWeeks: parsed.snapFullWeeks !== undefined ? Boolean(parsed.snapFullWeeks) : true,
+      startDate,
+      endDate,
+      weeksCount,
+      snapFullWeeks,
+      collapseWeekends,
+      calendarSort: parsed.calendarSort === 'member' ? 'member' : 'type',
       members: Array.isArray(parsed.members) && parsed.members.length > 0 ? parsed.members : baseState.members,
       dayTypes: Array.isArray(parsed.dayTypes) && parsed.dayTypes.length > 0 ? parsed.dayTypes : baseState.dayTypes,
       rules: Array.isArray(parsed.rules) ? parsed.rules.map((r, i) => normalizeRule(r, i)) : baseState.rules,
@@ -55,28 +102,11 @@ export function loadAppState() {
 }
 
 /**
- * Ajoute 3 désidératas d'exemple sur la première semaine lors de la toute première visite
- * (illustrant les cas cités : Congé pour Martine, Télétravail pour Louis, Pas de TT+Perm pour André).
+ * Initialise les désidératas par défaut (vierge pour permettre de tester librement
+ * la répartition équitable des 10 membres, ou d'ajouter des congés / maladies à la volée).
  */
 function createSampleDesiderata(state) {
-  const dates = getDatesInRange(state.startDate, state.endDate);
-  if (dates.length >= 5) {
-    // Mardi de la 1re semaine : Congé pour Martine
-    state.desiderata[`${dates[1]}__m_martine`] = {
-      requiredType: 'CONGE',
-      forbiddenTypes: []
-    };
-    // Mercredi de la 1re semaine : Pas de TT+Perm pour André
-    state.desiderata[`${dates[2]}__m_andre`] = {
-      requiredType: null,
-      forbiddenTypes: ['TT_PERM']
-    };
-    // Vendredi de la 1re semaine : Télétravail pour Louis
-    state.desiderata[`${dates[4]}__m_louis`] = {
-      requiredType: 'TT',
-      forbiddenTypes: []
-    };
-  }
+  state.desiderata = {};
   return state;
 }
 
@@ -88,7 +118,10 @@ export function saveAppState(state) {
     const toSave = {
       startDate: state.startDate,
       endDate: state.endDate,
+      weeksCount: state.weeksCount,
       snapFullWeeks: state.snapFullWeeks,
+      collapseWeekends: state.collapseWeekends !== undefined ? Boolean(state.collapseWeekends) : true,
+      calendarSort: state.calendarSort || 'type',
       members: state.members,
       dayTypes: state.dayTypes,
       rules: state.rules,
@@ -121,7 +154,7 @@ export function alignToFullWeeks(startIso, endIso) {
   let end = new Date(ey, em - 1, ed, 12, 0, 0);
   if (end < start) {
     end = new Date(start);
-    end.setDate(start.getDate() + 20);
+    end.setDate(start.getDate() + DEFAULT_WEEKS_COUNT * 7 - 1);
   }
 
   // Ramener start au Lundi de sa semaine

@@ -11,25 +11,36 @@
   <!-- En-tête principal -->
   <header class="app-header">
     <div class="brand">
-      <div class="brand-logo" aria-hidden="true">📅</div>
+      <div class="brand-logo" aria-hidden="true">
+        <svg class="icon-svg icon-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="16" y1="2" x2="16" y2="6"></line>
+          <line x1="8" y1="2" x2="8" y2="6"></line>
+          <line x1="3" y1="10" x2="21" y2="10"></line>
+        </svg>
+      </div>
       <div>
         <h1>Horaires d'Équipe <span class="badge-local" title="Aucune donnée n'est envoyée sur un serveur. Tout reste dans votre navigateur.">100% Local</span></h1>
-        <p class="subtitle">Planification intelligente combinant règles d'organisation et désidératas</p>
+        <p class="subtitle">Planification combinant règles d'organisation et désidératas</p>
       </div>
     </div>
 
     <div class="header-actions">
       <button type="button" id="btn-export-csv" class="btn btn-outline btn-sm" title="Exporter l'horaire en CSV (Excel)">
-        📥 Export CSV
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Export CSV</span>
       </button>
       <button type="button" id="btn-print" class="btn btn-outline btn-sm" title="Imprimer le calendrier">
-        🖨️ Imprimer
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        <span>Imprimer</span>
       </button>
       <button type="button" id="btn-backup-json" class="btn btn-outline btn-sm" title="Exporter ou importer toute la configuration en JSON">
-        💾 Sauvegarde JSON
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        <span>Sauvegarde JSON</span>
       </button>
       <button type="button" id="btn-reset-all" class="btn btn-danger-ghost btn-sm" title="Réinitialiser aux valeurs de démonstration">
-        ↺ Réinitialiser
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        <span>Réinitialiser</span>
       </button>
     </div>
   </header>
@@ -37,6 +48,20 @@
   <!-- Barre de réglages au-dessus du calendrier -->
   <section class="settings-bar" aria-label="Barre de réglages de la période et de la configuration">
     <div class="settings-group period-settings">
+      <div class="field-inline">
+        <label for="select-weeks-count">Affichage</label>
+        <select id="select-weeks-count" title="Choisir le nombre de semaines à afficher">
+          <option value="1">1 semaine</option>
+          <option value="2" selected>2 semaines</option>
+          <option value="3">3 semaines</option>
+          <option value="4">4 semaines</option>
+          <option value="5">5 semaines</option>
+          <option value="6">6 semaines</option>
+          <option value="8">8 semaines</option>
+          <option value="12">12 semaines</option>
+          <option value="custom" hidden>Dates libres</option>
+        </select>
+      </div>
       <div class="field-inline">
         <label for="input-start-date">Début</label>
         <input type="date" id="input-start-date" />
@@ -46,48 +71,84 @@
         <input type="date" id="input-end-date" />
       </div>
       <div class="quick-period-btns">
-        <button type="button" id="btn-prev-week" class="btn btn-ghost btn-xs" title="Reculer d'une semaine">◀ -1 sem.</button>
-        <button type="button" id="btn-default-3weeks" class="btn btn-ghost btn-xs" title="Revenir aux 3 prochaines semaines pleines">3 sem. pleines</button>
-        <button type="button" id="btn-next-week" class="btn btn-ghost btn-xs" title="Avancer d'une semaine">+1 sem. ▶</button>
+        <button type="button" id="btn-prev-week" class="btn btn-ghost btn-xs" title="Reculer d'une semaine">‹ -1 sem.</button>
+        <button type="button" id="btn-default-period" class="btn btn-ghost btn-xs" title="Revenir à partir du prochain lundi">Aujourd'hui</button>
+        <button type="button" id="btn-next-week" class="btn btn-ghost btn-xs" title="Avancer d'une semaine">+1 sem. ›</button>
       </div>
       <label class="checkbox-inline" title="Aligne automatiquement le début sur le Lundi et la fin sur le Dimanche">
         <input type="checkbox" id="chk-snap-weeks" checked />
-        <span>Semaines pleines (Lun–Dim)</span>
+        <span>Semaines pleines</span>
       </label>
     </div>
 
     <!-- Boutons d'ouverture des panneaux de configuration (Membres, Typologie, Règles, Désidératas) -->
     <div class="settings-group config-tabs">
       <button type="button" class="btn btn-tab" data-panel="panel-members">
-        👥 Membres <span class="count-pill" id="count-members">0</span>
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>Membres</span>
+        <span class="count-pill" id="count-members">0</span>
       </button>
       <button type="button" class="btn btn-tab" data-panel="panel-types">
-        🏷️ Typologie journées <span class="count-pill" id="count-types">0</span>
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        <span>Typologie</span>
+        <span class="count-pill" id="count-types">0</span>
       </button>
       <button type="button" class="btn btn-tab" data-panel="panel-rules">
-        ⚖️ Règles <span class="count-pill" id="count-rules">0</span>
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span>Règles</span>
+        <span class="count-pill" id="count-rules">0</span>
       </button>
       <button type="button" class="btn btn-tab" data-panel="panel-llm">
-        🤖 Import / Prompt LLM
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>Import / LLM</span>
       </button>
       <button type="button" class="btn btn-tab" data-panel="panel-desiderata">
-        📌 Désidératas <span class="count-pill" id="count-desiderata">0</span>
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        <span>Désidératas</span>
+        <span class="count-pill" id="count-desiderata">0</span>
       </button>
     </div>
 
     <!-- Contrôles de génération de proposition -->
     <div class="settings-group solver-controls">
       <button type="button" id="btn-generate" class="btn btn-primary">
-        ✨ Générer une proposition
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        <span>Générer une proposition</span>
       </button>
       <button type="button" id="btn-alternative" class="btn btn-secondary" title="Générer une autre variante valide respectant les règles">
-        🔄 Autre proposition
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        <span>Autre variante</span>
       </button>
       <div class="proposal-switcher" id="proposal-switcher" hidden>
-        <button type="button" id="btn-prev-prop" class="btn btn-ghost btn-xs" title="Proposition précédente">◀</button>
+        <button type="button" id="btn-prev-prop" class="btn btn-ghost btn-xs" title="Proposition précédente">‹</button>
         <span id="proposal-label">Proposition #1</span>
-        <button type="button" id="btn-next-prop" class="btn btn-ghost btn-xs" title="Proposition suivante">▶</button>
+        <button type="button" id="btn-next-prop" class="btn btn-ghost btn-xs" title="Proposition suivante">›</button>
       </div>
+    </div>
+
+    <!-- Options d'affichage du calendrier et d'interaction intégrées dans la barre fixe -->
+    <div class="settings-group calendar-view-controls">
+      <div class="field-inline">
+        <label for="select-calendar-sort">Tri</label>
+        <select id="select-calendar-sort" title="Ordre d'affichage des membres dans chaque jour du calendrier">
+          <option value="type" selected>Par type de journée</option>
+          <option value="member">Par personne</option>
+        </select>
+      </div>
+
+      <div class="field-inline">
+        <label for="select-interaction-mode">Clic case</label>
+        <select id="select-interaction-mode" title="Action lors du clic sur un membre dans le calendrier">
+          <option value="inspect">Menu complet</option>
+        </select>
+      </div>
+
+      <button type="button" id="btn-toggle-weekends" class="btn btn-secondary btn-sm" title="Replier ou déplier les colonnes du week-end">
+        <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span id="btn-toggle-weekends-label">Week-end (replié)</span>
+      </button>
+
+      <div id="schedule-status-banner" class="status-banner"></div>
     </div>
   </section>
 
@@ -97,7 +158,7 @@
     <div id="panel-members" class="drawer-panel" hidden>
       <div class="drawer-header">
         <div>
-          <h2>👥 Membres de l'équipe</h2>
+          <h2>Membres de l'équipe</h2>
           <p>Ajoutez ou modifiez les membres de l'équipe (sauvegardés automatiquement dans votre navigateur).</p>
         </div>
         <button type="button" class="btn-close-drawer" data-close-drawer aria-label="Fermer">✕</button>
@@ -117,7 +178,7 @@
     <div id="panel-types" class="drawer-panel" hidden>
       <div class="drawer-header">
         <div>
-          <h2>🏷️ Typologie des journées</h2>
+          <h2>Typologie des journées</h2>
           <p>Définissez les types de journées (bureau, télétravail, permanence, garde weekend, congé...) et si elles s'appliquent en semaine, le weekend ou les deux.</p>
         </div>
         <button type="button" class="btn-close-drawer" data-close-drawer aria-label="Fermer">✕</button>
@@ -148,7 +209,7 @@
     <div id="panel-rules" class="drawer-panel" hidden>
       <div class="drawer-header">
         <div>
-          <h2>⚖️ Règles de l'organisation</h2>
+          <h2>Règles de l'organisation</h2>
           <p>Activez, modifiez ou ajoutez des règles métier. Le moteur générique combine toutes les règles actives pour construire l'horaire.</p>
         </div>
         <button type="button" class="btn-close-drawer" data-close-drawer aria-label="Fermer">✕</button>
@@ -189,7 +250,7 @@
     <div id="panel-llm" class="drawer-panel" hidden>
       <div class="drawer-header">
         <div>
-          <h2>🤖 Génération et Import de Règles par LLM (IA)</h2>
+          <h2>Génération et Import de Règles par LLM (IA)</h2>
           <p>Vous pouvez faire rédiger vos règles par un LLM externe (ChatGPT, Claude, Mistral, Gemini) à partir d'une description en français, puis coller le JSON obtenu ici.</p>
         </div>
         <button type="button" class="btn-close-drawer" data-close-drawer aria-label="Fermer">✕</button>
@@ -200,7 +261,7 @@
           <p class="help-text">Ce prompt inclut automatiquement vos membres, votre typologie de journées et le schéma JSON générique attendu par l'application.</p>
           <textarea id="llm-prompt-output" rows="10" readonly></textarea>
           <div class="btn-row">
-            <button type="button" id="btn-copy-prompt" class="btn btn-secondary btn-sm">📋 Copier le prompt pour le LLM</button>
+            <button type="button" id="btn-copy-prompt" class="btn btn-secondary btn-sm">Copier le prompt pour le LLM</button>
             <span id="copy-prompt-feedback" class="feedback-badge" hidden>Copié !</span>
           </div>
         </div>
@@ -210,8 +271,8 @@
           <textarea id="llm-json-input" rows="10" placeholder='[ { "name": "...", "kind": "daily_headcount", "params": { ... } } ]'></textarea>
           <div id="llm-json-error" class="alert-error" hidden></div>
           <div class="btn-row">
-            <button type="button" id="btn-import-rules-replace" class="btn btn-primary btn-sm">✅ Remplacer les règles par ce JSON</button>
-            <button type="button" id="btn-import-rules-append" class="btn btn-outline btn-sm">➕ Ajouter aux règles existantes</button>
+            <button type="button" id="btn-import-rules-replace" class="btn btn-primary btn-sm">Remplacer les règles par ce JSON</button>
+            <button type="button" id="btn-import-rules-append" class="btn btn-outline btn-sm">+ Ajouter aux règles existantes</button>
           </div>
         </div>
       </div>
@@ -221,31 +282,18 @@
     <div id="panel-desiderata" class="drawer-panel" hidden>
       <div class="drawer-header">
         <div>
-          <h2>📌 Désidératas des membres</h2>
+          <h2>Désidératas des membres</h2>
           <p>Cliquez directement sur un membre dans n'importe quelle case du calendrier pour ajouter un souhait (ex: <em>Congé</em>, <em>Télétravail</em>) ou une interdiction (ex: <em>Pas de TT + Perm. matin</em>).</p>
         </div>
         <button type="button" class="btn-close-drawer" data-close-drawer aria-label="Fermer">✕</button>
       </div>
       <div class="drawer-body">
         <div class="desiderata-toolbar">
-          <button type="button" id="btn-clear-desiderata" class="btn btn-danger-ghost btn-sm">🗑️ Effacer tous les désidératas de la période</button>
+          <button type="button" id="btn-clear-desiderata" class="btn btn-danger-ghost btn-sm">Effacer tous les désidératas de la période</button>
         </div>
         <div id="desiderata-list" class="desiderata-list"></div>
       </div>
     </div>
-  </section>
-
-  <!-- Barre d'outils rapide (Légende + Pinceau de saisie rapide des désidératas + Statut de conformité) -->
-  <section class="workspace-toolbar">
-    <div class="brush-bar">
-      <span class="brush-label">🖱️ Clic sur le calendrier :</span>
-      <select id="select-interaction-mode" title="Choisissez l'action lors du clic sur un membre dans le calendrier">
-        <option value="inspect">Menu complet (Désidérata + Changer l'affectation)</option>
-      </select>
-      <span class="brush-hint" id="brush-hint">Cliquez sur un membre dans un jour du calendrier pour définir un désidérata ou modifier son horaire.</span>
-    </div>
-
-    <div id="schedule-status-banner" class="status-banner"></div>
   </section>
 
   <!-- Calendrier principal : Une semaine par ligne (Lundi -> Vendredi | Samedi -> Dimanche) -->
@@ -270,7 +318,7 @@
   <section class="summary-section">
     <div class="summary-card">
       <div class="summary-header">
-        <h2>📊 Récapitulatif par membre sur la période</h2>
+        <h2>Récapitulatif par membre sur la période</h2>
         <div id="legend-pills" class="legend-pills"></div>
       </div>
       <div class="table-responsive">
@@ -283,7 +331,7 @@
 
     <div class="summary-card" id="violations-card" hidden>
       <div class="summary-header">
-        <h2>⚠️ Points d'attention / Conflits de règles</h2>
+        <h2>Points d'attention / Conflits de règles</h2>
       </div>
       <ul id="violations-list" class="violations-list"></ul>
     </div>
@@ -308,18 +356,18 @@
 
           <div class="desiderata-controls">
             <div class="des-block">
-              <label class="des-label">🔒 Demander / Fixer ce type de journée :</label>
+              <label class="des-label">Demander / Fixer ce type de journée :</label>
               <div id="modal-des-require-list" class="chips-group"></div>
             </div>
 
             <div class="des-block">
-              <label class="des-label">🚫 Ou interdire certains types (« Pas de... ») :</label>
+              <label class="des-label">Ou interdire certains types (« Pas de... ») :</label>
               <div id="modal-des-forbid-list" class="chips-group"></div>
             </div>
 
             <div class="des-actions">
               <button type="button" id="btn-clear-cell-des" class="btn btn-outline btn-xs">Effacer le désidérata de ce jour</button>
-              <button type="button" id="btn-apply-des-and-solve" class="btn btn-primary btn-xs">✨ Appliquer & recalculer l'horaire</button>
+              <button type="button" id="btn-apply-des-and-solve" class="btn btn-primary btn-xs">Appliquer & recalculer l'horaire</button>
             </div>
           </div>
         </div>
@@ -341,16 +389,16 @@
     <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="backup-modal-title">
       <div class="modal-header">
         <div>
-          <h3 id="backup-modal-title">💾 Sauvegarde & Restauration locale (JSON)</h3>
+          <h3 id="backup-modal-title">Sauvegarde & Restauration locale (JSON)</h3>
           <p class="modal-subtitle">Toutes vos données sont stockées uniquement dans votre navigateur. Vous pouvez télécharger une copie de sauvegarde ou en importer une.</p>
         </div>
         <button type="button" id="btn-close-backup-modal" class="btn-close-drawer" aria-label="Fermer">✕</button>
       </div>
       <div class="modal-body">
         <div class="btn-row" style="margin-bottom: 12px;">
-          <button type="button" id="btn-download-json-file" class="btn btn-primary btn-sm">⬇️ Télécharger le fichier .json</button>
+          <button type="button" id="btn-download-json-file" class="btn btn-primary btn-sm">Télécharger le fichier .json</button>
           <label class="btn btn-secondary btn-sm" style="cursor: pointer;">
-            📂 Importer un fichier .json
+            Importer un fichier .json
             <input type="file" id="input-upload-json-file" accept=".json,application/json" hidden />
           </label>
         </div>
