@@ -1131,8 +1131,8 @@ function renderCalendar() {
       const miniPillsHtml = state.dayTypes
         .filter(dt => counts[dt.id] > 0 && dt.isWorkingDay)
         .map(dt => `
-          <span class="quota-mini-pill" style="background:${dt.bgColor};color:${dt.textColor}" title="${dt.label}: ${counts[dt.id]}">
-            ${dt.shortLabel.slice(0, 3)}:${counts[dt.id]}
+          <span class="quota-mini-pill" style="background:${dt.bgColor};color:${dt.textColor};border:1px solid ${dt.color}55;" title="${escapeHtml(dt.label)} : ${counts[dt.id]}">
+            ${counts[dt.id]}
           </span>
         `).join('');
 
@@ -1186,18 +1186,60 @@ function renderCalendar() {
         `;
       }).join('');
 
-      const weekendCollapsedHtml = day.isWeekend ? `
-        <div class="weekend-collapsed-badge" title="Week-end replié. Cliquez pour déplier/replier les week-ends.">
-          <span>${DOW_SHORT_FR[day.dow]}</span>
-          <span>${day.dayNum}</span>
-        </div>
-      ` : '';
+      let weekendCollapsedHtml = '';
+      if (day.isWeekend) {
+        // Personnes ayant un statut différent de REPOS (ou repos par défaut)
+        const nonRestMembers = [];
+        for (const m of activeMembers) {
+          const assignedId = grid[day.iso]?.[m.id];
+          const dt = typeMap.get(assignedId);
+          if (assignedId && assignedId !== 'REPOS' && (!dt || !dt.isDefaultRest)) {
+            nonRestMembers.push({ member: m, dayType: dt, typeId: assignedId });
+          }
+        }
+
+        // Regrouper par type pour afficher les cases colorées chiffrées avec les noms au survol
+        const nonRestByType = new Map();
+        for (const item of nonRestMembers) {
+          const tid = item.typeId;
+          if (!nonRestByType.has(tid)) {
+            nonRestByType.set(tid, { dayType: item.dayType, count: 0, members: [] });
+          }
+          const group = nonRestByType.get(tid);
+          group.count++;
+          group.members.push(item.member.name);
+        }
+
+        const weekendPillsHtml = Array.from(nonRestByType.values()).map(g => {
+          const dt = g.dayType;
+          const bg = dt ? dt.bgColor : '#e2e8f0';
+          const fg = dt ? dt.textColor : '#1e293b';
+          const border = dt ? `1px solid ${dt.color}55` : '1px solid #cbd5e1';
+          const label = dt ? dt.label : 'Service';
+          const tooltip = `${label} (${g.count}) :\n${g.members.join(', ')}`;
+          return `
+            <span class="quota-mini-pill weekend-duty-pill" style="background:${bg};color:${fg};border:${border};" title="${escapeHtml(tooltip)}">
+              ${g.count}
+            </span>
+          `;
+        }).join('');
+
+        weekendCollapsedHtml = `
+          <div class="weekend-collapsed-badge" title="Week-end replié. Cliquez pour déplier/replier les week-ends.">
+            <span class="we-dow">${DOW_SHORT_FR[day.dow]}</span>
+            <span class="we-day">${day.dayNum}</span>
+            ${weekendPillsHtml ? `<div class="weekend-collapsed-pills">${weekendPillsHtml}</div>` : ''}
+          </div>
+        `;
+      }
+
+      const dateShortFormatted = `${String(day.dayNum).padStart(2, '0')}/${String(day.monthNum).padStart(2, '0')}`;
 
       return `
         <div class="day-cell ${day.isWeekend ? 'weekend' : 'weekday'} ${!day.inRange ? 'out-of-range' : ''} ${hasViolation ? 'has-violation' : ''}" data-day-iso="${day.iso}">
           <div class="day-cell-header">
             <span class="day-date-title">
-              ${DOW_SHORT_FR[day.dow]} ${day.dayNum} ${MONTHS_SHORT_FR[day.monthNum - 1]}
+              ${dateShortFormatted}
               ${hasViolation ? `<span title="${escapeHtml(dayViolations.map(v => v.message).join(' | '))}">⚠️</span>` : ''}
             </span>
             <div class="day-quotas-mini">${miniPillsHtml}</div>

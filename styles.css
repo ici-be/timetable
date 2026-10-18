@@ -662,13 +662,17 @@ input[type="color"] {
   display: none;
 }
 
+.weekend-collapsed-badge {
+  display: none;
+}
+
 .calendar-container.weekends-collapsed .day-cell.weekend .weekend-collapsed-badge {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 8px 2px;
+  justify-content: flex-start;
+  gap: 3px;
+  padding: 6px 2px 8px;
   color: #b45309;
   font-size: 10.5px;
   font-weight: 600;
@@ -676,10 +680,32 @@ input[type="color"] {
   line-height: 1.2;
 }
 
-.calendar-container.weekends-collapsed .day-cell.weekend .weekend-collapsed-badge svg {
-  width: 14px;
-  height: 14px;
-  opacity: 0.7;
+.calendar-container.weekends-collapsed .day-cell.weekend .we-dow {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #92400e;
+  letter-spacing: 0.02em;
+}
+
+.calendar-container.weekends-collapsed .day-cell.weekend .we-day {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.calendar-container.weekends-collapsed .day-cell.weekend .weekend-collapsed-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.calendar-container.weekends-collapsed .day-cell.weekend .weekend-duty-pill {
+  min-width: 22px;
+  height: 20px;
+  font-size: 11px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .calendar-header-row {
@@ -814,9 +840,17 @@ input[type="color"] {
 }
 
 .quota-mini-pill {
-  padding: 1px 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 4px;
   border-radius: 4px;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
 }
 
 .day-members-list {
